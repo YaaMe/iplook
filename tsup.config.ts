@@ -11,6 +11,7 @@ export default defineConfig({
     index: "src/index.ts",
     text: "src/text.ts",
     build: "src/build/index.ts",
+    cli: "src/cli/main.ts",
   },
   format: ["esm"],
   target: "es2022",
