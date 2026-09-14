@@ -11,7 +11,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Writing the GitHub Release once the publish has succeeded.
+      contents: write
       # Required for npm provenance: the registry records which workflow, from
       # which commit, produced the tarball, and anyone can verify it.
       id-token: write
@@ -48,3 +49,18 @@ jobs:
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Only after the registry has it. A Release pointing at a version nobody
+      # can install is worse than no Release, and the ordering is the only
+      # thing that prevents it.
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          printf '%s\n\n---\n\n```sh\nnpm i iplook@%s\n```\n' \
+            "$notes" "${GITHUB_REF_NAME#v}" > /tmp/notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            --verify-tag
