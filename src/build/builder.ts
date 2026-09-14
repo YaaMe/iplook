@@ -63,14 +63,23 @@ export class TableBuilder {
     this.addPrefixId(cidr, this.dict.intern(value));
   }
 
-  addPrefixId(cidr: string, id: number): void {
+  addPrefixId(raw: string, id: number): void {
+    // Trim first.
+    //
+    // A CIDR read from a file on a machine that writes CRLF arrives as
+    // "1.0.0.0/24\r", and the carriage return lands inside the prefix length.
+    // The error that produced — `bad prefix length: 1.0.0.0/24` — pointed at
+    // the one part of the input that was fine, and sent the reader looking at
+    // their prefix lengths. fromText and the CLI already trimmed; this is the
+    // path a caller takes when they have their own reader.
+    const cidr = raw.trim();
     const slash = indexOfSlash(cidr, 0, cidr.length);
     const addr = slash < 0 ? cidr : cidr.slice(0, slash);
     const fam = parseAddr(addr, this.scratch);
 
     if (fam === FAMILY_V4) {
       const len = slash < 0 ? 32 : parsePrefixLen(cidr, slash + 1, cidr.length, 32);
-      if (len < 0) throw new InputError(`bad prefix length: ${cidr}`);
+      if (len < 0) throw new InputError(badLen(cidr, slash, 32));
       // Masking rather than rejecting: real lists contain 10.0.0.1/8, and the
       // block it means is unambiguous.
       const mask = len === 0 ? 0 : (0xffffffff << (32 - len)) >>> 0;
@@ -79,7 +88,7 @@ export class TableBuilder {
     }
     if (fam === FAMILY_V6) {
       const len = slash < 0 ? 128 : parsePrefixLen(cidr, slash + 1, cidr.length, 128);
-      if (len < 0) throw new InputError(`bad prefix length: ${cidr}`);
+      if (len < 0) throw new InputError(badLen(cidr, slash, 128));
       maskInPlace6(this.scratch, len);
       this.addBlock6(this.scratch, len, id);
       return;
@@ -111,7 +120,9 @@ export class TableBuilder {
   }
 
   /** Add every address from `lo` to `hi` inclusive, as dotted quads. */
-  addRange(lo: string, hi: string, value: string): void {
+  addRange(rawLo: string, rawHi: string, value: string): void {
+    const lo = rawLo.trim();
+    const hi = rawHi.trim();
     const id = this.dict.intern(value);
     const a = parseAddr(lo, this.scratch);
     if (a !== FAMILY_V4) throw new InputError(`not an IPv4 address: ${lo}`);
@@ -217,4 +228,17 @@ function maskInPlace6(words: Uint32Array, len: number): void {
     }
     words[k] = (words[k]! & (0xffffffff << (32 - (len - high)))) >>> 0;
   }
+}
+
+/**
+ * Say what is actually wrong with the length.
+ *
+ * `bad prefix length: 1.0.0.0/24` is what this used to produce for a line
+ * ending in a carriage return, and it points at the only part of the input
+ * that was correct. Quoting the suffix is what makes an invisible character
+ * visible.
+ */
+function badLen(cidr: string, slash: number, max: number): string {
+  const suffix = cidr.slice(slash + 1);
+  return `bad prefix length ${JSON.stringify(suffix)} in ${JSON.stringify(cidr)}: expected 0 to ${max}`;
 }

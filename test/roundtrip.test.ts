@@ -186,3 +186,34 @@ describe("loading", () => {
     expect(() => new IpTable(buf)).toThrow(/does not start at/);
   });
 });
+
+describe("input that arrives from a file", () => {
+  // A corpus written on a machine with CRLF line endings gives every entry a
+  // trailing carriage return. The error it used to produce named the prefix
+  // length, which was the one part of the line that was correct.
+  it("accepts a trailing carriage return", () => {
+    const b = new TableBuilder();
+    b.addPrefix("1.0.0.0/24\r", "crlf");
+    b.addPrefix("2001:db8::/32\r", "v6");
+    const t = new IpTable(b.build().buffer);
+    expect(t.lookup("1.0.0.5")).toBe("crlf");
+    expect(t.lookup("2001:db8::1")).toBe("v6");
+  });
+
+  it("accepts surrounding whitespace", () => {
+    const b = new TableBuilder();
+    b.addPrefix("  10.0.0.0/8\t", "padded");
+    b.addRange(" 192.168.0.0 ", " 192.168.255.255 ", "range");
+    const t = new IpTable(b.build().buffer);
+    expect(t.lookup("10.1.1.1")).toBe("padded");
+    expect(t.lookup("192.168.1.1")).toBe("range");
+  });
+
+  it("says what is wrong with a length rather than naming the whole block", () => {
+    const b = new TableBuilder();
+    expect(() => b.addPrefix("1.2.3.0/99", "x")).toThrow(/length "99".*expected 0 to 32/);
+    expect(() => b.addPrefix("2001:db8::/200", "x")).toThrow(
+      /length "200".*expected 0 to 128/,
+    );
+  });
+});
