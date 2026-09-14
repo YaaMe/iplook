@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So the figures can be re-measured on demand: a shared runner varies enough
+  # between machines that one run is not evidence.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest version package.json declares, the current LTS, and latest.
+        node: ["20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npx biome ci .
+      - run: npx tsc --noEmit
+      - run: npm run build
+      # The boundary guard reads dist/, so it has to run after the build.
+      - run: npx vitest run
+
+  # The reader claims to work anywhere, which is worth checking rather than
+  # asserting: each of these has its own module resolution and its own idea of
+  # what a global is.
+  runtimes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun test test/ --timeout 60000
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: deno loads the reader and answers
+        run: |
+          deno eval --allow-read '
+            const { IpTable } = await import("./dist/index.js");
+            const { TableBuilder } = await import("./dist/build.js");
+            const b = new TableBuilder();
+            b.addPrefix("10.0.0.0/8", "x");
+            b.addPrefix("2001:db8::/32", "y");
+            const t = new IpTable(b.build().buffer);
+            if (t.lookup("10.1.1.1") !== "x") throw new Error("v4 wrong");
+            if (t.lookup("2001:db8::1") !== "y") throw new Error("v6 wrong");
+            if (t.lookup("8.8.8.8") !== undefined) throw new Error("miss wrong");
+            console.log("deno ok");
+          '
+
+  # Informational. A shared runner is far too noisy to gate a merge on, so this
+  # fails only when a benchmark will not run at all.
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: size and speed
+        run: |
+          {
+            echo '## dist'
+            echo '```'
+            ls -l dist/*.js | awk '{printf "%-16s %7.1f KB\n", $9, $5/1024}'
+            echo '```'
+            echo '## lookup'
+            echo '```'
+            node bench/lookup.bench.mjs
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
