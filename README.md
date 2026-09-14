@@ -52,6 +52,141 @@ The structure has to be proportional to the number of *boundaries*, not the
 number of blocks. Anything storing one entry per CIDR — a trie node, a hash
 bucket — is ten million entries for this data and does not fit.
 
+## How it works
+
+Take a three-block list in an 8-bit address space, so the numbers fit on a
+line. The real thing is the same with 32 bits.
+
+```
+0/2    -> A      covers   0 .. 63
+16/4   -> B      covers  16 .. 31     nested inside A
+128/1  -> C      covers 128 .. 255
+```
+
+Address 20 is in both A and B. The more specific one wins, so the answer is B.
+
+### 1. Flatten the nesting
+
+Each block becomes two events, an entry and an exit, and a sweep goes left to
+right holding an `active[]` array **indexed by prefix length**:
+
+```
+  at    event       active            winner (the longest)
+   0    A enters    [2]=A             A
+  16    B enters    [2]=A [4]=B       B     <- 4 is longer than 2
+  32    B leaves    [2]=A             A
+  64    A leaves    (empty)           none
+ 128    C enters    [1]=C             C
+```
+
+An array works instead of a priority queue because **two prefixes of the same
+length can never both cover one address** — they are either the same block or
+disjoint. So each length needs one slot, and the winner is the highest
+occupied one, found with a single `Math.clz32`.
+
+Cut wherever the winner changes:
+
+```
+start    0      16     32     64      128
+value    A      B      A      none    C
+         +------+------+------+--------+-->  255
+```
+
+The nesting is gone. Every address belongs to exactly one span.
+
+Two details carry weight. **At a shared address, exits must be processed
+before entries** — a block ending at X-1 and another of the same length
+starting at X would otherwise have the arrival written into `active[len]` and
+immediately cleared by the departure, losing a prefix silently. The radix sort
+is chosen for its stability precisely to keep that order. And **gaps are spans
+too**, carrying a reserved value id of 0, which is what makes a sparse
+allowlist and a dense geolocation table the same shape with one read path.
+
+### 2. Drop the ends
+
+The line above has no gaps and no overlaps, so each span ends where the next
+begins. Storing the start stores the end:
+
+```js
+starts = [0, 16, 32, 64, 128]   // Uint32Array, 4 bytes each
+values = [A,  B,  A,  0,  C ]   // Uint8Array, 1 byte each
+```
+
+312,379 spans x 5 bytes is the 1.49 MB above.
+
+### 3. Look up the last start at or below the address
+
+Looking up 20: the last start at or below it is 16, at index 1, so the answer
+is `values[1]` — B. Looking up 70: index 3, value 0, no answer. That is a
+binary search, about nineteen comparisons over 312k spans.
+
+### 4. Bracket it with a coarse index
+
+At load, walk the spans once and record, for each bucket of the address's
+leading bits, which span contains the bucket's first address:
+
+```js
+lo = idx[v >>> shift]
+hi = idx[(v >>> shift) + 1]     // two or three comparisons, not nineteen
+```
+
+The bracket is **exact, not a hint**: because the partition is complete, an
+address in bucket `b` is at or above the bucket's start, so its span is at or
+after `idx[b]`; and below the next bucket's start, so at or before `idx[b+1]`.
+No fallback path.
+
+The index is sized to the table — about two spans a bucket, capped at 18 bits.
+It costs heap and **zero bundle bytes**, and bundle bytes are the budget that
+is actually tight. Each width measured in its own process, both orders, on the
+312,379-span table:
+
+| index | per bucket | search | parse + search | index heap | total heap |
+|---|---|---|---|---|---|
+| fixed 16 bits | 5.8 | 3.4 ns | 46.4 ns | 256 KB | 1.74 MB |
+| sized to the table (18 here) | 2.2 | **2.8 ns** | **42.7 ns** | 1.00 MB | 2.49 MB |
+
+A few percent at this size, for four times the index. The real gain is at the
+other end, where a fixed width was absurd:
+
+| spans | table | index, fixed | index, sized |
+|---|---|---|---|
+| 101 | 0 KB | 256 KB | **1 KB** |
+| 1,001 | 5 KB | 256 KB | **2 KB** |
+| 10,001 | 49 KB | 256 KB | **32 KB** |
+| 65,536 | 320 KB | 256 KB | 256 KB |
+| 312,380 | 1.49 MB | 256 KB | 1.00 MB |
+
+A hundred-span allowlist used to carry an index 256 times its own size.
+
+### 5. Load without parsing
+
+The bytes in the file are the bytes in memory, so loading is taking views:
+
+```js
+new Uint32Array(buffer, offset, count)   // no copy, no parse, no walk
+```
+
+There is no hydration step, which is the point of the format.
+
+### The chain
+
+```
+CIDR, nested
+  |  sweep, cut where the winner changes
+partition: no nesting, no gaps, no overlaps
+  |  gapless => the end is implied
+two parallel arrays
+  |  arrays are bytes => nothing to parse
+views + coarse index
+  |
+two or three comparisons
+```
+
+Each step is the direct consequence of the one above. So are the costs:
+merging discards which prefixes formed a span, so there is **no delete**; and
+the speed comes from precomputing over the whole corpus, so an insert means a
+rebuild.
+
 ## Install
 
 ```sh
