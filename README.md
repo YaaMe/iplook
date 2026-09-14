@@ -179,10 +179,13 @@ Parsing is 60% of what a Worker pays. If you already hold a parsed address,
 
 ## Status
 
-IPv4 is complete and tested. **The reader handles IPv6, but the builder does
-not emit it yet** — an IPv6 table cannot be produced by this version. The
-format reserves the stride field for it and the search path is written; the
-sweep is not.
+Both families are complete and tested.
+
+IPv6 boundaries are stored at the width the data needs: a corpus whose every
+boundary is /64-aligned holds two words per boundary rather than four, halving
+that section. One boundary with bits below /64 widens the whole table — the
+builder reports that rather than rounding to avoid it, since rounding would
+change answers.
 
 Correctness is checked against a linear-scan reference over every one of the
 2^24 addresses in `10.0.0.0/8`, plus boundary differential tests, property

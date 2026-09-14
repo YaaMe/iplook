@@ -8,10 +8,17 @@
  */
 
 import { NO_VALUE } from "../format.js";
-import { FAMILY_V4, indexOfSlash, parseAddr, parsePrefixLen } from "../parse.js";
+import {
+  FAMILY_V4,
+  FAMILY_V6,
+  indexOfSlash,
+  parseAddr,
+  parsePrefixLen,
+} from "../parse.js";
 import { Dict } from "./dict.js";
 import { serialize } from "./serialize.js";
 import { type ConflictPolicy, rangeToBlocks, sweepV4 } from "./sweep.js";
+import { sweepV6 } from "./sweep6.js";
 
 export interface BuildStats {
   /** Blocks accepted. */
@@ -38,6 +45,10 @@ export class TableBuilder {
   private lens: Uint8Array = new Uint8Array(1024);
   private ids: Uint32Array = new Uint32Array(1024);
   private n = 0;
+  private starts6: Uint32Array = new Uint32Array(4 * 256);
+  private lens6: Uint8Array = new Uint8Array(256);
+  private ids6: Uint32Array = new Uint32Array(256);
+  private n6 = 0;
   private readonly scratch = new Uint32Array(4);
 
   constructor(private readonly opts: BuilderOptions = {}) {}
@@ -54,23 +65,49 @@ export class TableBuilder {
 
   addPrefixId(cidr: string, id: number): void {
     const slash = indexOfSlash(cidr, 0, cidr.length);
-    if (slash < 0) {
-      // A bare address is a host route.
-      const fam = parseAddr(cidr, this.scratch);
-      if (fam !== FAMILY_V4) throw new InputError(`not an IPv4 address: ${cidr}`);
-      this.addBlock(this.scratch[0]!, 32, id);
+    const addr = slash < 0 ? cidr : cidr.slice(0, slash);
+    const fam = parseAddr(addr, this.scratch);
+
+    if (fam === FAMILY_V4) {
+      const len = slash < 0 ? 32 : parsePrefixLen(cidr, slash + 1, cidr.length, 32);
+      if (len < 0) throw new InputError(`bad prefix length: ${cidr}`);
+      // Masking rather than rejecting: real lists contain 10.0.0.1/8, and the
+      // block it means is unambiguous.
+      const mask = len === 0 ? 0 : (0xffffffff << (32 - len)) >>> 0;
+      this.addBlock((this.scratch[0]! & mask) >>> 0, len, id);
       return;
     }
-    const addr = cidr.slice(0, slash);
-    const fam = parseAddr(addr, this.scratch);
-    if (fam !== FAMILY_V4) throw new InputError(`not an IPv4 prefix: ${cidr}`);
-    const len = parsePrefixLen(cidr, slash + 1, cidr.length, 32);
-    if (len < 0) throw new InputError(`bad prefix length: ${cidr}`);
+    if (fam === FAMILY_V6) {
+      const len = slash < 0 ? 128 : parsePrefixLen(cidr, slash + 1, cidr.length, 128);
+      if (len < 0) throw new InputError(`bad prefix length: ${cidr}`);
+      maskInPlace6(this.scratch, len);
+      this.addBlock6(this.scratch, len, id);
+      return;
+    }
+    throw new InputError(`not an IP prefix: ${cidr}`);
+  }
 
-    // Masking rather than rejecting: real lists contain 10.0.0.1/8, and the
-    // block it means is unambiguous.
-    const mask = len === 0 ? 0 : (0xffffffff << (32 - len)) >>> 0;
-    this.addBlock((this.scratch[0]! & mask) >>> 0, len, id);
+  /** Bulk: add one aligned IPv6 block. `words` is read, not retained. */
+  addBlock6(words: Uint32Array, len: number, id: number): void {
+    if (id === NO_VALUE) return;
+    if (this.n6 === this.lens6.length) this.grow6();
+    for (let k = 0; k < 4; k++) this.starts6[this.n6 * 4 + k] = words[k]!;
+    this.lens6[this.n6] = len;
+    this.ids6[this.n6] = id;
+    this.n6++;
+  }
+
+  private grow6(): void {
+    const cap = this.lens6.length * 2;
+    const s = new Uint32Array(cap * 4);
+    s.set(this.starts6);
+    this.starts6 = s;
+    const l = new Uint8Array(cap);
+    l.set(this.lens6);
+    this.lens6 = l;
+    const i = new Uint32Array(cap);
+    i.set(this.ids6);
+    this.ids6 = i;
   }
 
   /** Add every address from `lo` to `hi` inclusive, as dotted quads. */
@@ -121,6 +158,8 @@ export class TableBuilder {
     // single map lookup; renumber now that the sorted order is known.
     const ids = new Uint32Array(this.n);
     for (let i = 0; i < this.n; i++) ids[i] = remap[this.ids[i]!]!;
+    const ids6 = new Uint32Array(this.n6);
+    for (let i = 0; i < this.n6; i++) ids6[i] = remap[this.ids6[i]!]!;
 
     const partition = sweepV4(
       {
@@ -132,12 +171,25 @@ export class TableBuilder {
       this.opts.onConflict ?? "longest",
     );
 
+    const p6 =
+      this.n6 > 0
+        ? sweepV6(
+            {
+              starts: this.starts6.subarray(0, this.n6 * 4),
+              lens: this.lens6.subarray(0, this.n6),
+              ids: ids6,
+              n: this.n6,
+            },
+            this.opts.onConflict ?? "longest",
+          )
+        : null;
+
     const buffer = serialize({
-      v4Starts: partition.starts,
-      v4Values: partition.values,
-      v6Starts: new Uint32Array(0),
-      v6Values: new Uint32Array(0),
-      v6Stride: 0,
+      v4Starts: this.n > 0 ? partition.starts : new Uint32Array(0),
+      v4Values: this.n > 0 ? partition.values : new Uint32Array(0),
+      v6Starts: p6 ? p6.starts : new Uint32Array(0),
+      v6Values: p6 ? p6.values : new Uint32Array(0),
+      v6Stride: p6 ? p6.stride : 0,
       values,
       meta: this.opts.meta,
     });
@@ -145,11 +197,24 @@ export class TableBuilder {
     return {
       buffer,
       stats: {
-        blocks: this.n,
-        spans: partition.starts.length,
+        blocks: this.n + this.n6,
+        spans: (this.n > 0 ? partition.starts.length : 0) + (p6 ? p6.values.length : 0),
         values: values.length,
         bytes: buffer.byteLength,
       },
     };
+  }
+}
+
+/** Zero the bits below `len` in a four-word address, in place. */
+function maskInPlace6(words: Uint32Array, len: number): void {
+  for (let k = 0; k < 4; k++) {
+    const high = k * 32;
+    if (len >= high + 32) continue;
+    if (len <= high) {
+      words[k] = 0;
+      continue;
+    }
+    words[k] = (words[k]! & (0xffffffff << (32 - (len - high)))) >>> 0;
   }
 }
