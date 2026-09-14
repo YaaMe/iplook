@@ -226,7 +226,11 @@ function indexReport(bytes: Uint8Array, spans: number): number {
 
   const auto = indexBitsFor(spans);
   const widths: number[] = [];
-  for (let b = Math.max(MIN_INDEX_BITS, auto - 4); b <= Math.min(MAX_INDEX_BITS, auto + 4); b += 2) {
+  for (
+    let b = Math.max(MIN_INDEX_BITS, auto - 4);
+    b <= Math.min(MAX_INDEX_BITS, auto + 4);
+    b += 2
+  ) {
     widths.push(b);
   }
   if (!widths.includes(auto)) widths.push(auto);
@@ -277,7 +281,6 @@ function indexReport(bytes: Uint8Array, spans: number): number {
     };
 
     built.push({ bits, idx, shift, search, mean: sum / (1 << bits), max });
-
   }
 
   // Time every width forwards, then backwards.

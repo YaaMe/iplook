@@ -244,7 +244,7 @@ for (const im of impls.slice(1)) {
 }
 base.agrees = "reference";
 
-function measure(im, budgetMs = 700) {
+function measure(im) {
   // Adaptive: a linear scanner cannot take the same iteration count as an
   // indexed one, and forcing it to would take hours.
   let iters = 64;
@@ -282,7 +282,7 @@ for (const im of impls) {
   results.push({ name: im.name, ns: m.ns });
   const mem = im.bytes < 0 ? "n/a" : `${(im.bytes / 1048576).toFixed(2)} MB`;
   console.log(
-    `  ${im.name.padEnd(24)} ${m.ns.toFixed(1).padStart(9)} ns ${mem.padStart(11)} ${(im.ms + "ms").padStart(8)}  ${im.agrees}`,
+    `  ${im.name.padEnd(24)} ${m.ns.toFixed(1).padStart(9)} ns ${mem.padStart(11)} ${(`${im.ms}ms`).padStart(8)}  ${im.agrees}`,
   );
 }
 const fastest = results[0].ns;

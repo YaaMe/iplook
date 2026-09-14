@@ -91,7 +91,11 @@ export class IpTable {
     const wantIndex = opts.index !== false;
     const explicit = typeof opts.index === "number" ? opts.index : undefined;
     if (explicit !== undefined) {
-      if (!Number.isInteger(explicit) || explicit < MIN_INDEX_BITS || explicit > MAX_INDEX_BITS) {
+      if (
+        !Number.isInteger(explicit) ||
+        explicit < MIN_INDEX_BITS ||
+        explicit > MAX_INDEX_BITS
+      ) {
         throw new RangeError(
           `index must be an integer between ${MIN_INDEX_BITS} and ${MAX_INDEX_BITS}, got ${explicit}`,
         );
@@ -203,8 +207,7 @@ export class IpTable {
   } {
     return {
       indexBits: { v4: this.v4Bits, v6: this.v6Bits },
-      indexBytes:
-        (this.v4Index?.byteLength ?? 0) + (this.v6Index?.byteLength ?? 0),
+      indexBytes: (this.v4Index?.byteLength ?? 0) + (this.v6Index?.byteLength ?? 0),
       v4: this.header.v4Count,
       v6: this.header.v6Count,
       bytes:

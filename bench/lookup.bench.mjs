@@ -105,13 +105,7 @@ const searchPlain = measure("search, plain binary", (i) => {
 const searchIndexed = measure("search, coarse index", (i) => {
   sink += indexed.lookupV4(nums[i & MASK]);
 });
-const parseOnly = measure(
-  "parse only",
-  (i) => {
-    sink += strs[i & MASK].length;
-  },
-  5_000_000,
-);
+
 const together = measure("parse + search (what a Worker pays)", (i) => {
   sink += indexed.lookupId(strs[i & MASK]);
 });
@@ -120,6 +114,7 @@ console.log(
   `\n  index speedup ${(searchPlain / searchIndexed).toFixed(2)}x` +
     `   parse share of the total ${(((together - searchIndexed) / together) * 100).toFixed(0)}%`,
 );
-console.log(
-  `  checksum ${sink & 0xff}   (parse-only row is a loop-overhead floor, not a parse cost)`,
-);
+// Parsing is not timed on its own: a loop that only touches the string
+// measures the loop, not the parse. Its real cost is the difference between
+// the two rows above.
+console.log(`  checksum ${sink & 0xff}`);

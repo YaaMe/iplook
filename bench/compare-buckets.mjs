@@ -132,17 +132,17 @@ console.log(
   `\ncorpus  ${file.replace(/.*\//, "")}  ${lines.length.toLocaleString()} CIDR`,
 );
 console.log(
-  `agree   ${disagree === 0 ? "identical on all " + N + " probes" : disagree + "/" + N + " disagree"}`,
+  `agree   ${disagree === 0 ? `identical on all ${N} probes` : `${disagree}/${N} disagree`}`,
 );
 console.log(`        mask buckets probe ${lensUsed} prefix lengths, longest first\n`);
 console.log(
   `  ${"structure".padEnd(32)} ${"retained".padStart(11)} ${"build".padStart(8)}`,
 );
 console.log(
-  `  ${"mask buckets, integer keys".padEnd(32)} ${(buckets.bytes / 1048576).toFixed(2).padStart(8)} MB ${(bucketMs + "ms").padStart(8)}`,
+  `  ${"mask buckets, integer keys".padEnd(32)} ${(buckets.bytes / 1048576).toFixed(2).padStart(8)} MB ${(`${bucketMs}ms`).padStart(8)}`,
 );
 console.log(
-  `  ${"iplook partition".padEnd(32)} ${(table.bytes / 1048576).toFixed(2).padStart(8)} MB ${(tableMs + "ms").padStart(8)}\n`,
+  `  ${"iplook partition".padEnd(32)} ${(table.bytes / 1048576).toFixed(2).padStart(8)} MB ${(`${tableMs}ms`).padStart(8)}\n`,
 );
 
 const MASK = N - 1;
