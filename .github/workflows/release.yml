@@ -38,6 +38,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
+      # `npm stage` needs 11.15.0 or newer, and Node 24 ships 11.4.x.
+      - run: npm i -g npm@^11.15.0
+
       - run: npm ci
 
       # The tag is the only thing that triggers this, so it had better match
@@ -60,14 +63,26 @@ jobs:
       - run: npm run build
       - run: npx vitest run
 
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Staged, not published.
+      #
+      # The tarball goes to npm's staging queue rather than the registry, and
+      # a human has to approve it there with 2FA before anyone can install it.
+      # Staging itself needs no 2FA, which is what lets CI do this part.
+      #
+      # No NODE_AUTH_TOKEN: authentication is OIDC. npm verifies with GitHub
+      # that this request comes from this repository's release.yml running in
+      # the `npm` environment, so there is no long-lived credential anywhere to
+      # leak. Provenance is the default under trusted publishing, so the flag
+      # is gone too.
+      - run: npm stage publish --access public
 
-      # Only after the registry has it. A Release pointing at a version nobody
-      # can install is worse than no Release, and the ordering is the only
-      # thing that prevents it.
-      - name: GitHub Release
+      # A draft, because the package is staged and not yet installable.
+      #
+      # Publishing the Release here would advertise a version nobody can get,
+      # and CI cannot know when the npm approval happens. So the notes are
+      # prepared and left as a draft: whoever approves the stage on npm
+      # publishes this at the same moment.
+      - name: Draft the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,6 +90,7 @@ jobs:
           printf '%s\n\n---\n\n```sh\nnpm i iplook@%s\n```\n' \
             "$notes" "${GITHUB_REF_NAME#v}" > /tmp/notes.md
           gh release create "$GITHUB_REF_NAME" \
+            --draft \
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/notes.md \
             --verify-tag
