@@ -86,6 +86,39 @@ export function parseIPv4(s: string, start = 0, end = s.length): number {
 }
 
 /**
+ * Parse `s[start..end)` as a decimal prefix length, or -1.
+ *
+ * Kept here beside the address parsers so the builder and the runtime text
+ * loader share one definition of what a CIDR looks like.
+ */
+export function parsePrefixLen(
+  s: string,
+  start: number,
+  end: number,
+  max: number,
+): number {
+  if (start >= end || end - start > 3) return -1;
+  const first = s.charCodeAt(start);
+  if (first < CH_ZERO || first > CH_NINE) return -1;
+  if (end - start > 1 && first === CH_ZERO) return -1; // "/08"
+  let v = 0;
+  for (let i = start; i < end; i++) {
+    const c = s.charCodeAt(i);
+    if (c < CH_ZERO || c > CH_NINE) return -1;
+    v = v * 10 + (c - CH_ZERO);
+  }
+  return v > max ? -1 : v;
+}
+
+/** Index of the "/" in `s[start..end)`, or -1. */
+export function indexOfSlash(s: string, start: number, end: number): number {
+  for (let i = start; i < end; i++) {
+    if (s.charCodeAt(i) === 47) return i;
+  }
+  return -1;
+}
+
+/**
  * Parse `s` as an address, writing the result into `out`.
  *
  * Returns the family. For {@link FAMILY_V4} only `out[0]` is written, holding
