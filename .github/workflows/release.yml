@@ -10,6 +10,20 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # A manual gate in front of an irreversible action.
+    #
+    # `npm publish` cannot be taken back: unpublishing is restricted after 72
+    # hours and a version number can never be reused. A tag push is a cheap
+    # gesture by comparison — `git push --tags` sends every local tag — so the
+    # confirmation lives here instead, after the gates below have run.
+    #
+    # That ordering is the point. What gets approved is not "I intend to cut a
+    # release" but "this build passed everything and may go to the registry".
+    #
+    # Set up once: Settings -> Environments -> New environment named `npm`,
+    # with Required reviewers. Without it the job runs unattended, which is
+    # the behaviour this comment exists to prevent.
+    environment: npm
     permissions:
       # Writing the GitHub Release once the publish has succeeded.
       contents: write
