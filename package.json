@@ -1,0 +1,62 @@
+{
+  "name": "iplook",
+  "version": "0.0.0",
+  "description": "Map an IP address to a value, for a table that is fixed once built. Small enough to bundle into a Cloudflare Worker.",
+  "type": "module",
+  "license": "MIT",
+  "author": "YaaMe Zhu <i@yaa.me>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YaaMe/iplook.git"
+  },
+  "keywords": [
+    "ip",
+    "cidr",
+    "geoip",
+    "lookup",
+    "cloudflare-workers",
+    "edge"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./text": {
+      "types": "./dist/text.d.ts",
+      "default": "./dist/text.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "default": "./dist/build.js"
+    }
+  },
+  "bin": {
+    "iplook": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "FORMAT.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "bench": "vitest bench --run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.14",
+    "@types/node": "^24.10.1",
+    "fast-check": "^4.5.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

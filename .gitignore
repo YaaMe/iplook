@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Built tables. These are artefacts, and a real one may be derived from a
+# licensed commercial database — keep them out of the repository by default.
+# fixtures/ is the deliberate exception and is committed explicitly.
+*.iplk
+!fixtures/*.iplk
