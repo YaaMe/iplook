@@ -172,40 +172,40 @@ probes, correctness checked before anything is timed. **The machine was under
 load, so read the ratios and not the absolute figures** — they moved 1.5x
 between a quiet session and a busy one while every ratio held.
 
-### Against other JavaScript libraries
+### Against everything else that answers this question
 
-All four measured in one process, on the same 125,918-block corpus, with the
-same probes, and checked to agree on every one of them first. Each takes the
-address as a string, which is the form a Worker has.
+All measured in one process, on the same 125,918-block corpus, with the same
+probes, and checked to agree on every one of them before any is timed. Each
+takes the address as a **string**, which is the form a Worker has.
 
 | | lookup | retained | build |
 |---|---|---|---|
-| **iplook** | **100 ns** | **0.10 MB** | 88 ms |
-| [`longest-prefix-match`](https://www.npmjs.com/package/longest-prefix-match) | 998 ns | 26.67 MB | 244 ms |
-| [`ipaddr.js`](https://github.com/whitequark/ipaddr.js) `subnetMatch` | 1,774,178 ns | 47.15 MB | 716 ms |
-| [`cidr-tools`](https://www.npmjs.com/package/cidr-tools) `containsCidr` | 20,168,648 ns | — | 116 ms |
-
-The last two scan linearly, so they degrade with the corpus: `cidr-tools` is
-1.8 ms on a 12k-block list and 20 ms on this one.
+| **iplook** | **101 ns** | **0.05 MB** | 81 ms |
+| mask buckets | 860 ns | 5.87 MB | 56 ms |
+| [`longest-prefix-match`](https://www.npmjs.com/package/longest-prefix-match) | 975 ns | 26.67 MB | 205 ms |
+| [`ipaddr.js`](https://github.com/whitequark/ipaddr.js) `subnetMatch` | 1,761,731 ns | 47.15 MB | 753 ms |
+| [`cidr-tools`](https://www.npmjs.com/package/cidr-tools) `containsCidr` | 20,496,262 ns | — | 111 ms |
 
 Figures for other libraries are measured here rather than quoted from their
-own documentation, so that the machine is not part of the comparison.
+documentation, so the machine is not part of the comparison —
+`longest-prefix-match` measures 975 ns against the 50,000 ns its README
+reports, which is a difference in machines, not in the library.
 
-### Against bucketing by mask length
+The last two scan linearly and degrade with the corpus: `cidr-tools` is 1.8 ms
+on a 12k-block list and 20 ms on this one, past the Free plan's entire 10 ms
+CPU budget for a request.
 
-The other way to answer this question is to group prefixes by mask length and
-hash the masked address, probing longest first. Measured against an
-implementation of that with the same care — integer keys, nothing allocated
-per lookup — on the same corpus, both taking a pre-parsed address:
+**Parsing compresses the visible gap.** About 85 of iplook's 101 ns is turning
+the string into a number, which every row above also pays. Given a pre-parsed
+address the structures are 15.9 ns against 844.6 ns — **53x** rather than 9x.
+The string figure is what a Worker pays; the parsed figure is what the data
+structures differ by.
 
-| | lookup | retained |
-|---|---|---|
-| **iplook** | **15.9 ns** | **0.09 MB** |
-| mask buckets | 844.6 ns | 5.87 MB |
+### Why bucketing cannot close it
 
-The gap is structural rather than a matter of tuning. Bucketing must probe
-every prefix length present in the corpus, so its cost tracks the *number of
-distinct prefix lengths* and barely moves with the data:
+Grouping prefixes by mask length and hashing the masked address has to probe
+every prefix length present, so its cost tracks the *number of distinct prefix
+lengths* rather than the data:
 
 | corpus | blocks | prefix lengths | mask buckets | iplook |
 |---|---|---|---|---|
@@ -214,8 +214,13 @@ distinct prefix lengths* and barely moves with the data:
 | CN | 125,918 | 22 | 840 ns | 16 ns |
 | US | 5,037,099 | 26 | 1124 ns | 19 ns |
 
-432x the data costs 1.7x the time; four more prefix lengths cost more than
-that. A partition does two or three array reads regardless.
+432x the blocks costs 1.7x the time; four more prefix lengths cost more than
+that. A partition does two or three array reads regardless of either.
+
+Memory is the same story from the other side: bucketing stores one entry per
+block, a partition one per boundary. That is 5.87 MB against 0.09 MB here, and
+it is why the approach does not reach a whole-world table at all — the US
+alone is five million blocks.
 
 ### The index
 

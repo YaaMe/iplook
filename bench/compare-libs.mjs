@@ -4,6 +4,11 @@
  *   npm i longest-prefix-match cidr-tools ipaddr.js
  *   node --expose-gc bench/compare-libs.mjs <cidr-file>
  *
+ * Includes bucketing by mask length, the other structural answer to this
+ * question, written with the same care as the rest: integer keys, one map per
+ * prefix length, nothing allocated per lookup, and the same hand-rolled
+ * address parser, so what is being compared is the structure.
+ *
  * Not a dependency of this package: these are installed by hand when the
  * comparison is re-run. Every implementation is checked to agree on the probes
  * before any of them is timed, and each takes the address as a string, which
@@ -42,6 +47,63 @@ function timedRetained(build) {
   return r;
 }
 
+/** The same allocation-free parse the library uses, so the comparison is even. */
+function parseV4(s) {
+  let v = 0;
+  let i = 0;
+  for (let octet = 0; octet < 4; octet++) {
+    let d = 0;
+    let digits = 0;
+    while (i < s.length) {
+      const c = s.charCodeAt(i);
+      if (c < 48 || c > 57) break;
+      d = d * 10 + (c - 48);
+      digits++;
+      i++;
+    }
+    if (digits === 0 || d > 255) return -1;
+    v = (v << 8) | d;
+    if (octet < 3) {
+      if (s.charCodeAt(i) !== 46) return -1;
+      i++;
+    }
+  }
+  return v >>> 0;
+}
+
+/**
+ * Bucketing by mask length: group prefixes by length, key on the masked
+ * address, probe longest first. This is the shape of the structure the author
+ * reached for twice before, and the cost it cannot escape is one probe per
+ * distinct prefix length in the corpus.
+ */
+function buildBuckets(cidrs) {
+  const byLen = new Array(33).fill(null);
+  const masks = new Uint32Array(33);
+  for (let l = 0; l <= 32; l++) masks[l] = l === 0 ? 0 : (0xffffffff << (32 - l)) >>> 0;
+  for (const line of cidrs) {
+    const slash = line.indexOf("/");
+    const v = parseV4(slash < 0 ? line : line.slice(0, slash));
+    const len = slash < 0 ? 32 : Number(line.slice(slash + 1));
+    if (!byLen[len]) byLen[len] = new Map();
+    byLen[len].set((v & masks[len]) >>> 0, 1);
+  }
+  const order = [];
+  for (let l = 32; l >= 0; l--) if (byLen[l]) order.push(l);
+  return { byLen, masks, order };
+}
+
+function bucketHas(b, ip) {
+  const v = parseV4(ip);
+  if (v < 0) return false;
+  const { byLen, masks, order } = b;
+  for (let i = 0; i < order.length; i++) {
+    const l = order[i];
+    if (byLen[l].get((v & masks[l]) >>> 0) !== undefined) return true;
+  }
+  return false;
+}
+
 const impls = [];
 
 impls.push({
@@ -53,6 +115,12 @@ impls.push({
     return new IpTable(b.build().buffer);
   }),
   has: (h, ip) => h.lookupId(ip) !== 0,
+});
+
+impls.push({
+  name: "mask buckets",
+  ...timedRetained(() => buildBuckets(lines)),
+  has: (h, ip) => bucketHas(h, ip),
 });
 
 impls.push({
@@ -137,8 +205,12 @@ function measure(im, budgetMs = 700) {
   return { ns: kept[Math.floor(kept.length / 2)], iters };
 }
 
+const bucketImpl = impls.find((i) => i.name === "mask buckets");
 console.log(
-  `\n  ${"library".padEnd(24)} ${"lookup".padStart(12)} ${"retained".padStart(11)} ${"build".padStart(8)}  agreement`,
+  `probe   ${bucketImpl.handle.order.length} distinct prefix lengths in this corpus`,
+);
+console.log(
+  `\n  ${"structure".padEnd(24)} ${"lookup".padStart(12)} ${"retained".padStart(11)} ${"build".padStart(8)}  agreement`,
 );
 const results = [];
 for (const im of impls) {
