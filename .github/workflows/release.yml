@@ -32,10 +32,17 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      # No `registry-url` on purpose.
+      #
+      # Given one, setup-node writes an .npmrc containing
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`. With the token
+      # gone that expands to an empty string, and npm then attempts token
+      # authentication with nothing and fails E401 — it never reaches OIDC.
+      # Leaving it out means no credential file exists, which is the condition
+      # trusted publishing needs.
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           cache: npm
 
       # `npm stage` needs 11.15.0 or newer, and Node 24 ships 11.4.x.
