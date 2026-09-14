@@ -167,6 +167,18 @@ configurations.
 
 ## Numbers
 
+> **These are local measurements, not a reproducible benchmark.** They come
+> from a commercial geolocation database that cannot be redistributed, so the
+> corpus is not in this repository and you cannot re-run exactly these numbers.
+> `bench/synth.mjs` generates a corpus with the same shape — a complete
+> partition, a few hundred unevenly distributed values, spans of widely varying
+> width, re-encoded into CIDR — which is what the figures actually depend on:
+>
+> ```sh
+> node bench/synth.mjs 312379 242 > /tmp/synthetic.txt
+> node --expose-gc bench/compare-libs.mjs /tmp/synthetic.txt
+> ```
+
 Node 24, darwin/arm64. Median of ten samples with outliers rejected, rotating
 probes, correctness checked before anything is timed. **The machine was under
 load, so read the ratios and not the absolute figures** — they moved 1.5x
