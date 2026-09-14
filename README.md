@@ -396,6 +396,12 @@ Correctness is checked against a linear-scan reference over every one of the
 tests over generated corpora, and a check that the built `dist/index.js`
 contains no Node API and none of the builder.
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md). A tag starts it; two approvals finish it,
+one on GitHub and one on npm, and no long-lived credential exists anywhere
+between them.
+
 ## Licence
 
 MIT
