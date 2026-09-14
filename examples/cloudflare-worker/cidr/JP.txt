@@ -1,0 +1,5 @@
+# One file per value; the file name is the value.
+# Real input would be a purchased database processed into CIDR — this is
+# enough to deploy and see the shape.
+203.0.113.0/24
+198.18.0.0/16

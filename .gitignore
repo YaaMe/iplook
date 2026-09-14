@@ -7,3 +7,6 @@ dist/
 # fixtures/ is the deliberate exception and is committed explicitly.
 *.iplk
 !fixtures/*.iplk
+
+# The example builds its own table from the CIDR files beside it.
+examples/**/src/*.iplk

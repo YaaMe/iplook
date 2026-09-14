@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "iplook-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // The line that matters. It hands `.iplk` to the module graph as an
+  // ArrayBuffer, so the table is imported rather than fetched — no network on
+  // the request path, and none of base64's 33% inflation.
+  "rules": [{ "type": "Data", "globs": ["**/*.iplk"], "fallthrough": true }]
+}

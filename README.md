@@ -17,11 +17,15 @@ export default {
 };
 ```
 
-```toml
-# wrangler.toml — hands the file straight over as an ArrayBuffer,
-# which avoids base64's 33% inflation
-rules = [{ type = "Data", globs = ["**/*.iplk"] }]
+```jsonc
+// wrangler.jsonc — hands the file over as an ArrayBuffer, avoiding base64's
+// 33% inflation. Without this line the import fails.
+"rules": [{ "type": "Data", "globs": ["**/*.iplk"], "fallthrough": true }]
 ```
+
+A deployable version of the above is in
+[`examples/cloudflare-worker/`](examples/cloudflare-worker/): `npm install &&
+npm run dev`.
 
 ## Why
 
