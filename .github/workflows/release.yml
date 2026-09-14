@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm provenance: the registry records which workflow, from
+      # which commit, produced the tarball, and anyone can verify it.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      # The tag is the only thing that triggers this, so it had better match
+      # what is about to be published. A mismatch here is a wrong version on
+      # the registry, which cannot be taken back.
+      - name: tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json $pkg"
+            exit 1
+          fi
+
+      # Publishing something that does not pass its own gates is worse than
+      # not publishing, so they all run again here rather than trusting that
+      # CI ran on the commit.
+      - run: npx biome ci .
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npx vitest run
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,6 +1,6 @@
 {
   "name": "iplook",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Map an IP address to a value, for a table that is fixed once built. Small enough to bundle into a Cloudflare Worker.",
   "type": "module",
   "license": "MIT",
