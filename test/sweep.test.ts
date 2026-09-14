@@ -204,8 +204,13 @@ describe("agreement under generated input", () => {
 
 describe("bounded exhaustive", () => {
   // 10.0.0.0/8 is 2^24 addresses. Checking every one of them leaves an
-  // off-by-one nowhere to hide, and it runs in seconds.
-  it("agrees with the reference on all of 10.0.0.0/8", () => {
+  // off-by-one nowhere to hide.
+  //
+  // The timeout is explicit because this is meant to be slow: about 2.5s on a
+  // developer machine and over 8s on a shared CI runner, against vitest's 5s
+  // default. Sampling instead would be faster and would defeat the point — the
+  // whole value is that there is nowhere left to hide.
+  it("agrees with the reference on all of 10.0.0.0/8", { timeout: 120_000 }, () => {
     const base = 0x0a000000;
     const blocks: RefBlock[] = [
       { start: base, len: 8, id: 1 },
