@@ -17,13 +17,29 @@
  *
  * A bucket should hold a couple of spans: enough that the index is not larger
  * than it needs to be, few enough that the search inside it is two or three
- * comparisons. Measured on a 312k-span table, 14 bits gives 20 spans a bucket
- * and 10.8 ns, 16 gives 5.8 and 5.3 ns, 18 gives 2.2 and 3.9 ns — and 20 is
- * *slower* at 4.2 ns despite only 1.3 spans a bucket, because a 4 MB index
- * starts competing for cache with the thing it indexes.
+ * comparisons.
  *
- * So: aim at roughly two spans per bucket, and stop at 18.
+ * Measured on a 312k-span table, each width in its own process because a
+ * single process lets the earlier widths warm the JIT for the later ones:
+ *
+ *     16 bits   5.6 ns    256 KB
+ *     18 bits   4.5 ns      1 MB     19% faster
+ *     20 bits   4.2 ns      4 MB      7% faster
+ *     22 bits   4.1 ns     16 MB      1% faster
+ *
+ * The returns collapse after 18, which is where this stops. Wider is not
+ * wrong, just a poor trade — and a caller who has measured their own data can
+ * override it with `index` on LoadOptions.
+ *
+ * The cap is not a tuning knob so much as a memory ceiling: 18 bits is 1 MB of
+ * index, and past it the index competes with the table for cache. A caller who
+ * knows better can override it with `index` on {@link LoadOptions} — a table
+ * that will be probed in a tight loop on a machine with cache to spare may
+ * want more, and one that must fit a small heap may want less.
  */
+export const MIN_INDEX_BITS = 4;
+export const MAX_INDEX_BITS = 24;
+
 export function indexBitsFor(spans: number): number {
   if (spans <= 0) return 8;
   const bits = 32 - Math.clz32(spans) - 1; // floor(log2(spans)) ~ spans/2 buckets

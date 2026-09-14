@@ -17,8 +17,8 @@
 import { readFileSync } from "node:fs";
 import { containsCidr } from "cidr-tools";
 import ipaddr from "ipaddr.js";
-import { BartJS } from "./bart-reference.mjs";
 import LongestPrefixMatch from "longest-prefix-match";
+import { BartJS } from "./bart-reference.mjs";
 
 const { IpTable } = await import("/Users/yaame/workspace/yaame/iplook/dist/index.js");
 const { TableBuilder } = await import(
@@ -138,10 +138,16 @@ impls.push({
     const ids = new Map();
     for (let i = 0; i < lines.length; i++) {
       let id = ids.get(values[i]);
-      if (id === undefined) { id = b.valueId(values[i]); ids.set(values[i], id); }
+      if (id === undefined) {
+        id = b.valueId(values[i]);
+        ids.set(values[i], id);
+      }
       b.addPrefixId(lines[i], id);
     }
-    return new IpTable(b.build().buffer);
+    // IPLOOK_INDEX overrides the automatic width, so a tuned table can be
+    // compared on the same footing as everything else.
+    const bits = process.env.IPLOOK_INDEX ? Number(process.env.IPLOOK_INDEX) : undefined;
+    return new IpTable(b.build().buffer, bits === undefined ? {} : { index: bits });
   }),
   has: (h, ip) => h.lookupId(ip) !== 0,
 });
@@ -161,7 +167,10 @@ impls.push({
       const slash = line.indexOf("/");
       const v = parseV4(slash < 0 ? line : line.slice(0, slash));
       let id = ids.get(values[i]);
-      if (id === undefined) { id = ids.size + 1; ids.set(values[i], id); }
+      if (id === undefined) {
+        id = ids.size + 1;
+        ids.set(values[i], id);
+      }
       t.insert(v, slash < 0 ? 32 : Number(line.slice(slash + 1)), id);
     }
     return t;

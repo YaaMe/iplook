@@ -73,7 +73,10 @@ function measure(label, fn, iters = 3_000_000) {
 }
 
 const { buffer, stats } = buildCorpus();
-const indexed = new IpTable(buffer);
+// An explicit index width can be passed to compare them; omitted, the table
+// sizes its own.
+const wanted = process.argv[2] ? Number(process.argv[2]) : undefined;
+const indexed = new IpTable(buffer, wanted === undefined ? {} : { index: wanted });
 const plain = new IpTable(buffer, { index: false });
 const { nums, strs } = probes(8192);
 const MASK = 8191;
@@ -90,9 +93,9 @@ for (let i = 0; i < 200_000; i++) {
 console.log(
   `\ntable   ${stats.spans} spans, ${stats.values} values, ${(stats.bytes / 1048576).toFixed(2)} MB`,
 );
-const idxBits = Math.min(18, Math.max(8, 32 - Math.clz32(stats.spans) - 1));
 console.log(
-  `heap    coarse index ${idxBits} bits, ${((((1 << idxBits) + 1) * 4) / 1048576).toFixed(2)} MB, zero bundle bytes\n`,
+  `heap    coarse index ${indexed.size.indexBits.v4} bits, ` +
+    `${(indexed.size.indexBytes / 1048576).toFixed(2)} MB, zero bundle bytes\n`,
 );
 
 let sink = 0;

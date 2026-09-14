@@ -135,28 +135,41 @@ address in bucket `b` is at or above the bucket's start, so its span is at or
 after `idx[b]`; and below the next bucket's start, so at or before `idx[b+1]`.
 No fallback path.
 
-The index is sized to the table — about two spans a bucket, capped at 18 bits.
-It costs heap and **zero bundle bytes**, and bundle bytes are the budget that
-is actually tight. Each width measured in its own process, both orders, on the
-312,379-span table:
+The index is sized to the table — about two spans a bucket, capped at 18 bits
+— and it costs heap and **zero bundle bytes**, which is the budget that is
+actually tight.
 
-| index | per bucket | search | parse + search | index heap | total heap |
-|---|---|---|---|---|---|
-| fixed 16 bits | 5.8 | 3.4 ns | 46.4 ns | 256 KB | 1.74 MB |
-| sized to the table (18 here) | 2.2 | **2.8 ns** | **42.7 ns** | 1.00 MB | 2.49 MB |
+That default is a guess about a distribution, so `iplook inspect --index`
+measures it on your data instead:
 
-A few percent at this size, for four times the index. The real gain is at the
-other end, where a fixed width was absurd:
+```
+   bits     buckets     index     total    search  parse+search
+     14      16,384     64 KB   1.55 MB   24.0 ns      129.2 ns
+     16      65,536    256 KB   1.74 MB   12.3 ns      116.2 ns
+     18     262,144   1.00 MB   2.49 MB    9.6 ns      108.2 ns   <- default
+     20   1,048,576   4.00 MB   5.49 MB    8.7 ns      104.0 ns
+     22   4,194,304  16.00 MB  17.49 MB    8.5 ns      102.8 ns
+```
 
-| spans | table | index, fixed | index, sized |
-|---|---|---|---|
-| 101 | 0 KB | 256 KB | **1 KB** |
-| 1,001 | 5 KB | 256 KB | **2 KB** |
-| 10,001 | 49 KB | 256 KB | **32 KB** |
-| 65,536 | 320 KB | 256 KB | 256 KB |
-| 312,380 | 1.49 MB | 256 KB | 1.00 MB |
+312,379 spans, each width in its own process. The cheap gains come first:
+64 KB buys 11%, the next 768 KB buys 7%, and after 18 bits it stops — 3 MB
+more buys 4%, and 12 MB after that buys 1%.
 
-A hundred-span allowlist used to carry an index 256 times its own size.
+Override it when you have measured your own:
+
+```ts
+new IpTable(bytes, { index: 20 })   // 4 to 24 bits
+new IpTable(bytes, { index: false }) // none: plain binary search, no heap
+```
+
+Every width answers identically. The index is derived at load and never
+stored, so changing it costs nothing in the file and nothing in the bundle.
+
+Widening it is not free of surprises: the *search* flattens out long before
+the memory does, because past a certain point the index competes with the
+table for cache rather than saving work. And on a table small enough that the
+whole thing fits in cache, the index earns very little — which is why the
+default scales down as well as up, to 1 KB for a hundred spans.
 
 ### 5. Load without parsing
 

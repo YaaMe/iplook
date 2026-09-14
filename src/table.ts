@@ -15,13 +15,26 @@ import {
   buildIndex1,
   buildIndexN,
   indexBitsFor,
+  MAX_INDEX_BITS,
+  MIN_INDEX_BITS,
   searchStride1,
   searchStrideN,
 } from "./search.js";
 
 export interface LoadOptions {
-  /** Build the coarse index at load. Default true; false trades speed for 256 KB. */
-  index?: boolean;
+  /**
+   * The coarse index that brackets the search.
+   *
+   * - `true` (default) — size it to the table: about two spans a bucket,
+   *   capped at 18 bits. See {@link indexBitsFor}.
+   * - `false` — do not build one. The lookup falls back to a plain binary
+   *   search over the whole table, which costs nothing in memory and is
+   *   roughly three times slower on a large one.
+   * - a number — that many bits of the address, 4 to 24. The index is
+   *   `2^bits + 1` uint32s, so 18 is 1 MB and 24 is 64 MB. It is derived
+   *   state: whatever you choose, every answer is identical.
+   */
+  index?: boolean | number;
   /** Check the partition invariants at load. Default true. */
   validate?: boolean;
 }
@@ -40,6 +53,8 @@ export class IpTable {
   private readonly v6Index: Uint32Array | null;
   private readonly v4Shift: number = 0;
   private readonly v6Shift: number = 0;
+  private readonly v4Bits: number = 0;
+  private readonly v6Bits: number = 0;
 
   /** The value strings. Index 0 is the empty string, meaning "no value". */
   readonly values: readonly string[];
@@ -74,13 +89,26 @@ export class IpTable {
     if (opts.validate !== false) this.validate();
 
     const wantIndex = opts.index !== false;
-    this.v4Index = wantIndex && h.v4Count > 0 ? buildIndex1(this.v4Starts) : null;
-    this.v4Shift = 32 - indexBitsFor(h.v4Count);
+    const explicit = typeof opts.index === "number" ? opts.index : undefined;
+    if (explicit !== undefined) {
+      if (!Number.isInteger(explicit) || explicit < MIN_INDEX_BITS || explicit > MAX_INDEX_BITS) {
+        throw new RangeError(
+          `index must be an integer between ${MIN_INDEX_BITS} and ${MAX_INDEX_BITS}, got ${explicit}`,
+        );
+      }
+    }
+
+    const v4Bits = explicit ?? indexBitsFor(h.v4Count);
+    const v6Bits = explicit ?? indexBitsFor(h.v6Count);
+    this.v4Bits = v4Bits;
+    this.v6Bits = v6Bits;
+    this.v4Shift = 32 - v4Bits;
+    this.v6Shift = 32 - v6Bits;
+    this.v4Index = wantIndex && h.v4Count > 0 ? buildIndex1(this.v4Starts, v4Bits) : null;
     this.v6Index =
       wantIndex && h.v6Count > 0
-        ? buildIndexN(this.v6Starts, this.v6Stride, h.v6Count)
+        ? buildIndexN(this.v6Starts, this.v6Stride, h.v6Count, v6Bits)
         : null;
-    this.v6Shift = 32 - indexBitsFor(h.v6Count);
   }
 
   /**
@@ -159,8 +187,24 @@ export class IpTable {
     return this.v6Values[i]!;
   }
 
-  get size(): { v4: number; v6: number; bytes: number } {
+  /**
+   * What the table holds and what the index costs.
+   *
+   * `indexBytes` is heap, not bundle: the index is derived at load and is not
+   * in the file. `indexBits` is what was chosen, so a caller tuning it can see
+   * where it landed.
+   */
+  get size(): {
+    v4: number;
+    v6: number;
+    bytes: number;
+    indexBits: { v4: number; v6: number };
+    indexBytes: number;
+  } {
     return {
+      indexBits: { v4: this.v4Bits, v6: this.v6Bits },
+      indexBytes:
+        (this.v4Index?.byteLength ?? 0) + (this.v6Index?.byteLength ?? 0),
       v4: this.header.v4Count,
       v6: this.header.v6Count,
       bytes:

@@ -9,6 +9,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import { TableBuilder } from "../build/builder.js";
+import { readHeader } from "../format.js";
+import { indexBitsFor, MAX_INDEX_BITS, MIN_INDEX_BITS } from "../search.js";
 import { IpTable } from "../table.js";
 import { forEachLine } from "./read-lines.js";
 
@@ -23,6 +25,7 @@ const USAGE = `iplook — an IP lookup table small enough to bundle
       --meta <k=v>                 repeatable
 
   iplook inspect <table.iplk>      header, counts, size breakdown
+      --index                      measure which index width suits this data
   iplook lookup  <table.iplk> <ip...>
   iplook verify  <table.iplk> --against <inputs...>
 
@@ -164,12 +167,18 @@ function load(path: string): IpTable {
 }
 
 function cmdInspect(argv: string[]): number {
-  const path = argv[0];
+  const { values: flags, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { index: { type: "boolean" } },
+  });
+  const path = positionals[0];
   if (!path) {
     process.stderr.write("iplook inspect: need a table\n");
     return 1;
   }
-  const t = load(path);
+  const bytes = readFileSync(path);
+  const t = new IpTable(bytes);
   const s = t.size;
   process.stdout.write(
     `${path}\n` +
@@ -177,9 +186,153 @@ function cmdInspect(argv: string[]): number {
       `  IPv6 spans   ${s.v6.toLocaleString()}\n` +
       `  values       ${t.values.length - 1}\n` +
       `  table bytes  ${(s.bytes / 1048576).toFixed(2)} MB\n` +
-      `  file bytes   ${(readFileSync(path).length / 1048576).toFixed(2)} MB\n`,
+      `  file bytes   ${(bytes.length / 1048576).toFixed(2)} MB\n` +
+      `  index        ${s.indexBits.v4} bits, ${(s.indexBytes / 1024).toFixed(0)} KB of heap ` +
+      `(chosen automatically; not in the file)\n`,
+  );
+  if (flags.index) return indexReport(bytes, s.v4);
+  process.stdout.write(
+    "\n  Pass --index to measure which width actually suits this data.\n",
   );
   return 0;
+}
+
+/**
+ * Measure, rather than assume, which index width suits this table.
+ *
+ * The default is a heuristic — about two spans a bucket — and a heuristic is
+ * a guess about a distribution. A real corpus can be clustered enough that the
+ * mean says nothing: one table measured here had a mean of 5.8 spans a bucket
+ * and a maximum of 5,792. So the width is chosen for the caller by default and
+ * reported here with its actual cost, on their data and their machine.
+ */
+function indexReport(bytes: Uint8Array, spans: number): number {
+  if (spans === 0) {
+    process.stdout.write("\n  no IPv4 spans to index\n");
+    return 0;
+  }
+  const copy = new Uint8Array(bytes).buffer;
+  const h = readHeader(new DataView(copy));
+  const starts = new Uint32Array(copy, h.v4StartsOffset, h.v4Count);
+
+  // Rotating probes, as a caller has, not one fixed address.
+  const N = 8192;
+  const probes = new Uint32Array(N);
+  let seed = 0xc0ffee;
+  for (let i = 0; i < N; i++) {
+    seed = (seed * 1103515245 + 12345) >>> 0;
+    probes[i] = seed;
+  }
+
+  const auto = indexBitsFor(spans);
+  const widths: number[] = [];
+  for (let b = Math.max(MIN_INDEX_BITS, auto - 4); b <= Math.min(MAX_INDEX_BITS, auto + 4); b += 2) {
+    widths.push(b);
+  }
+  if (!widths.includes(auto)) widths.push(auto);
+  widths.sort((a, b) => a - b);
+
+  process.stdout.write(
+    `\n  ${"bits".padStart(5)} ${"buckets".padStart(11)} ${"heap".padStart(9)}` +
+      ` ${"mean".padStart(7)} ${"max".padStart(8)} ${"lookup".padStart(10)}\n`,
+  );
+
+  const built: {
+    bits: number;
+    idx: Uint32Array;
+    shift: number;
+    search: (v: number) => number;
+    mean: number;
+    max: number;
+  }[] = [];
+
+  for (const bits of widths) {
+    const shift = 32 - bits;
+    const idx = new Uint32Array((1 << bits) + 1);
+    let i = 0;
+    for (let b = 0; b < 1 << bits; b++) {
+      const start = (b << shift) >>> 0;
+      while (i + 1 < spans && starts[i + 1]! <= start) i++;
+      idx[b] = i;
+    }
+    idx[1 << bits] = spans - 1;
+
+    let sum = 0;
+    let max = 0;
+    for (let b = 0; b < 1 << bits; b++) {
+      const n = idx[b + 1]! - idx[b]! + 1;
+      sum += n;
+      if (n > max) max = n;
+    }
+
+    const search = (v: number): number => {
+      let lo = idx[v >>> shift]!;
+      let hi = idx[(v >>> shift) + 1]!;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (starts[mid]! <= v) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo;
+    };
+
+    built.push({ bits, idx, shift, search, mean: sum / (1 << bits), max });
+
+  }
+
+  // Time every width forwards, then backwards.
+  //
+  // Measuring them in one order only makes the later ones look better: they
+  // run against a JIT the earlier ones have already warmed, and the bias is
+  // monotonic. Sweeping both ways and keeping the faster of the two readings
+  // cancels it. (Separate processes would be cleaner still, and is what the
+  // repository's own benchmarks do — but a CLI cannot fork itself politely.)
+  const iters = 400_000;
+  const timing = new Map<number, number[]>();
+  for (const pass of [built, [...built].reverse()]) {
+    for (const w of pass) {
+      for (let k = 0; k < iters; k++) w.search(probes[k & (N - 1)]!);
+      const samples: number[] = [];
+      for (let r = 0; r < 5; r++) {
+        const t0 = process.hrtime.bigint();
+        let acc = 0;
+        for (let k = 0; k < iters; k++) acc += w.search(probes[k & (N - 1)]!);
+        samples.push(Number(process.hrtime.bigint() - t0) / iters);
+        if (acc === -1) process.stdout.write("");
+      }
+      samples.sort((a, b) => a - b);
+      const got = timing.get(w.bits) ?? [];
+      got.push(samples[Math.floor(samples.length / 2)]!);
+      timing.set(w.bits, got);
+    }
+  }
+
+  let best = { bits: auto, ns: Number.POSITIVE_INFINITY };
+  for (const w of built) {
+    const ns = Math.min(...(timing.get(w.bits) ?? [Number.POSITIVE_INFINITY]));
+    if (ns < best.ns) best = { bits: w.bits, ns };
+    process.stdout.write(
+      `  ${String(w.bits).padStart(5)} ${(1 << w.bits).toLocaleString().padStart(11)}` +
+        ` ${fmtBytes(w.idx.byteLength).padStart(9)} ${w.mean.toFixed(1).padStart(7)}` +
+        ` ${w.max.toLocaleString().padStart(8)} ${`${ns.toFixed(1)} ns`.padStart(10)}` +
+        `${w.bits === auto ? "   <- default" : ""}\n`,
+    );
+  }
+
+  process.stdout.write(
+    `\n  Fastest here is ${best.bits} bits.` +
+      (best.bits === auto
+        ? " The default already picks it.\n"
+        : `  new IpTable(bytes, { index: ${best.bits} })\n`) +
+      "  Every width answers identically — the index is derived, never stored.\n" +
+      "  These timings are from this machine under its current load; the shape\n" +
+      "  of the table is what transfers.\n",
+  );
+  return 0;
+}
+
+function fmtBytes(n: number): string {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${(n / 1024).toFixed(0)} KB`;
 }
 
 function cmdLookup(argv: string[]): number {
