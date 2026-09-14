@@ -90,8 +90,9 @@ for (let i = 0; i < 200_000; i++) {
 console.log(
   `\ntable   ${stats.spans} spans, ${stats.values} values, ${(stats.bytes / 1048576).toFixed(2)} MB`,
 );
+const idxBits = Math.min(18, Math.max(8, 32 - Math.clz32(stats.spans) - 1));
 console.log(
-  `heap    coarse index ${(((1 << 16) + 1) * 4) / 1024} KB, zero bundle bytes\n`,
+  `heap    coarse index ${idxBits} bits, ${((((1 << idxBits) + 1) * 4) / 1048576).toFixed(2)} MB, zero bundle bytes\n`,
 );
 
 let sink = 0;

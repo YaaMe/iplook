@@ -11,7 +11,13 @@ import {
   readHeader,
 } from "./format.js";
 import { FAMILY_V4, FAMILY_V6, parseAddr } from "./parse.js";
-import { buildIndex1, buildIndexN, searchStride1, searchStrideN } from "./search.js";
+import {
+  buildIndex1,
+  buildIndexN,
+  indexBitsFor,
+  searchStride1,
+  searchStrideN,
+} from "./search.js";
 
 export interface LoadOptions {
   /** Build the coarse index at load. Default true; false trades speed for 256 KB. */
@@ -32,6 +38,8 @@ export class IpTable {
   private readonly v6Stride: number;
   private readonly v4Index: Uint32Array | null;
   private readonly v6Index: Uint32Array | null;
+  private readonly v4Shift: number = 0;
+  private readonly v6Shift: number = 0;
 
   /** The value strings. Index 0 is the empty string, meaning "no value". */
   readonly values: readonly string[];
@@ -67,10 +75,12 @@ export class IpTable {
 
     const wantIndex = opts.index !== false;
     this.v4Index = wantIndex && h.v4Count > 0 ? buildIndex1(this.v4Starts) : null;
+    this.v4Shift = 32 - indexBitsFor(h.v4Count);
     this.v6Index =
       wantIndex && h.v6Count > 0
         ? buildIndexN(this.v6Starts, this.v6Stride, h.v6Count)
         : null;
+    this.v6Shift = 32 - indexBitsFor(h.v6Count);
   }
 
   /**
@@ -131,7 +141,7 @@ export class IpTable {
   lookupV4(v: number): number {
     if (this.header.v4Count === 0) return NO_VALUE;
     const i = this.v4Index
-      ? searchStride1(this.v4Starts, this.v4Index, v >>> 0)
+      ? searchStride1(this.v4Starts, this.v4Index, this.v4Shift, v >>> 0)
       : linear1(this.v4Starts, v >>> 0);
     return this.v4Values[i]!;
   }
@@ -143,6 +153,7 @@ export class IpTable {
       this.v6Index,
       this.header.v6Count,
       this.v6Stride,
+      this.v6Shift,
       a,
     );
     return this.v6Values[i]!;

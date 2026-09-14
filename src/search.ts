@@ -12,8 +12,23 @@
  * nineteen scattered across a megabyte.
  */
 
-/** Bits of the address used to select an index bucket. */
-export const INDEX_BITS = 16;
+/**
+ * Bits of the address used to select an index bucket, sized to the table.
+ *
+ * A bucket should hold a couple of spans: enough that the index is not larger
+ * than it needs to be, few enough that the search inside it is two or three
+ * comparisons. Measured on a 312k-span table, 14 bits gives 20 spans a bucket
+ * and 10.8 ns, 16 gives 5.8 and 5.3 ns, 18 gives 2.2 and 3.9 ns — and 20 is
+ * *slower* at 4.2 ns despite only 1.3 spans a bucket, because a 4 MB index
+ * starts competing for cache with the thing it indexes.
+ *
+ * So: aim at roughly two spans per bucket, and stop at 18.
+ */
+export function indexBitsFor(spans: number): number {
+  if (spans <= 0) return 8;
+  const bits = 32 - Math.clz32(spans) - 1; // floor(log2(spans)) ~ spans/2 buckets
+  return Math.min(18, Math.max(8, bits));
+}
 
 /**
  * Build the coarse index for a stride-1 (IPv4) table.
@@ -22,7 +37,10 @@ export const INDEX_BITS = 16;
  * lies in a span somewhere in `[idx[b], idx[b + 1]]`. Because the partition is
  * complete, that bracket always contains the answer.
  */
-export function buildIndex1(starts: Uint32Array, bits = INDEX_BITS): Uint32Array {
+export function buildIndex1(
+  starts: Uint32Array,
+  bits = indexBitsFor(starts.length),
+): Uint32Array {
   const n = starts.length;
   const buckets = 1 << bits;
   const shift = 32 - bits;
@@ -49,7 +67,7 @@ export function buildIndexN(
   starts: Uint32Array,
   stride: number,
   count: number,
-  bits = INDEX_BITS,
+  bits = indexBitsFor(count),
 ): Uint32Array {
   const buckets = 1 << bits;
   const shift = 32 - bits;
@@ -65,10 +83,15 @@ export function buildIndexN(
   return idx;
 }
 
-/** The span containing `v`, for a stride-1 table. */
-export function searchStride1(starts: Uint32Array, idx: Uint32Array, v: number): number {
-  let lo = idx[v >>> (32 - INDEX_BITS)]!;
-  let hi = idx[(v >>> (32 - INDEX_BITS)) + 1]!;
+/** The span containing `v`, for a stride-1 table. `shift` is 32 - index bits. */
+export function searchStride1(
+  starts: Uint32Array,
+  idx: Uint32Array,
+  shift: number,
+  v: number,
+): number {
+  let lo = idx[v >>> shift]!;
+  let hi = idx[(v >>> shift) + 1]!;
   while (lo < hi) {
     const mid = (lo + hi + 1) >>> 1;
     if (starts[mid]! <= v) lo = mid;
@@ -90,9 +113,10 @@ export function searchStrideN(
   idx: Uint32Array,
   count: number,
   stride: number,
+  shift: number,
   a: Uint32Array,
 ): number {
-  const b = a[0]! >>> (32 - INDEX_BITS);
+  const b = a[0]! >>> shift;
   let lo = idx[b]!;
   let hi = idx[b + 1]!;
   while (lo < hi) {
