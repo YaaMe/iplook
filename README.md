@@ -27,9 +27,10 @@ rules = [{ type = "Data", globs = ["**/*.iplk"] }]
 
 A commercial IP database processed into CIDR is large. One real geolocation
 corpus is **10,014,241 CIDR blocks** across 242 country codes — 160 MB of
-text. Nothing in the JavaScript ecosystem will answer questions about that
-inside a Worker: `cidr-tools` and `ipaddr.js` scan linearly, and the only npm
-package doing longest-prefix match reports 0.05 ms per lookup — 50,000 ns.
+text. Nothing in the JavaScript ecosystem answers questions about that inside
+a Worker: `cidr-tools` and `ipaddr.js` scan linearly, so a single lookup over
+a 126k-block list costs 20 ms and 1.8 ms respectively — the first alone
+exceeds the Free plan's entire 10 ms CPU budget for a request.
 
 But those ten million blocks are **312,379 spans** once adjacent blocks with
 the same value are merged, and the result is an exact partition of IPv4: no
@@ -70,8 +71,13 @@ npx iplook build cidr/*.txt --value-from-filename -o src/geo.iplk
 read      10,014,241 lines, 10,014,241 blocks
 merge     312,379 spans (96.9% collapsed)
 values    242
-write     src/geo.iplk  1.49 MB  in 41.2s
+write     src/geo.iplk  1.49 MB  in 5.6s
 ```
+
+That is a real run over a commercial database, not an extrapolation. The
+resulting table compresses to **0.61 MB gzip, 0.49 MB brotli** — the Worker
+script limit counts compressed bytes, so a whole-world country table leaves
+the Free plan's 3 MB budget mostly empty.
 
 Or one file with the value inline:
 
@@ -87,6 +93,9 @@ Then check the artefact against what went into it:
 npx iplook verify geo.iplk --against cidr/*.txt
 #   verify    10,014,241 blocks agree
 ```
+
+Every block goes back through the table it produced. On the corpus above that
+is ten million checks in 5.3 s.
 
 `iplook inspect` reports the header, counts and size. `iplook lookup` answers
 a single address without writing a Worker.
@@ -158,24 +167,71 @@ configurations.
 
 ## Numbers
 
-Node 24, darwin/arm64, on a 308,700-span table. Median of ten samples with
-outliers rejected, 8192 rotating probes. **The machine was under load, so read
-the ratios and not the absolute figures** — they moved 1.5x between a quiet
-session and a busy one, while every ratio held.
+Node 24, darwin/arm64. Median of ten samples with outliers rejected, rotating
+probes, correctness checked before anything is timed. **The machine was under
+load, so read the ratios and not the absolute figures** — they moved 1.5x
+between a quiet session and a busy one while every ratio held.
+
+### Against other JavaScript libraries
+
+All four measured in one process, on the same 125,918-block corpus, with the
+same probes, and checked to agree on every one of them first. Each takes the
+address as a string, which is the form a Worker has.
+
+| | lookup | retained | build |
+|---|---|---|---|
+| **iplook** | **100 ns** | **0.10 MB** | 88 ms |
+| [`longest-prefix-match`](https://www.npmjs.com/package/longest-prefix-match) | 998 ns | 26.67 MB | 244 ms |
+| [`ipaddr.js`](https://github.com/whitequark/ipaddr.js) `subnetMatch` | 1,774,178 ns | 47.15 MB | 716 ms |
+| [`cidr-tools`](https://www.npmjs.com/package/cidr-tools) `containsCidr` | 20,168,648 ns | — | 116 ms |
+
+The last two scan linearly, so they degrade with the corpus: `cidr-tools` is
+1.8 ms on a 12k-block list and 20 ms on this one.
+
+Figures for other libraries are measured here rather than quoted from their
+own documentation, so that the machine is not part of the comparison.
+
+### Against bucketing by mask length
+
+The other way to answer this question is to group prefixes by mask length and
+hash the masked address, probing longest first. Measured against an
+implementation of that with the same care — integer keys, nothing allocated
+per lookup — on the same corpus, both taking a pre-parsed address:
+
+| | lookup | retained |
+|---|---|---|
+| **iplook** | **15.9 ns** | **0.09 MB** |
+| mask buckets | 844.6 ns | 5.87 MB |
+
+The gap is structural rather than a matter of tuning. Bucketing must probe
+every prefix length present in the corpus, so its cost tracks the *number of
+distinct prefix lengths* and barely moves with the data:
+
+| corpus | blocks | prefix lengths | mask buckets | iplook |
+|---|---|---|---|---|
+| SG | 11,647 | 19 | 653 ns | 42 ns |
+| JP | 463,041 | 20 | 775 ns | 18 ns |
+| CN | 125,918 | 22 | 840 ns | 16 ns |
+| US | 5,037,099 | 26 | 1124 ns | 19 ns |
+
+432x the data costs 1.7x the time; four more prefix lengths cost more than
+that. A partition does two or three array reads regardless.
+
+### The index
 
 | | ns/op |
 |---|---|
 | search, plain binary | 133.9 |
 | search, coarse index | **58.9** |
-| parse + search — what a Worker pays | 145.8 |
+| parse + search | 145.8 |
 
 The coarse index is a `Uint32Array(65537)` built at load: **zero bundle bytes**,
-256 KB of heap, and about three comparisons instead of nineteen. It is exact
+256 KB of heap, about three comparisons instead of nineteen. It is exact
 rather than a hint, because a complete partition guarantees the answer lies in
 `[idx[b], idx[b+1]]`.
 
-Parsing is 60% of what a Worker pays. If you already hold a parsed address,
-`lookupV4` skips it.
+Parsing is 60% of what a Worker pays. `lookupV4` skips it when you already
+hold a parsed address.
 
 ## Status
 

@@ -1,0 +1,156 @@
+/**
+ * Compare against the JavaScript libraries that answer the same question.
+ *
+ *   npm i longest-prefix-match cidr-tools ipaddr.js
+ *   node --expose-gc bench/compare-libs.mjs <cidr-file>
+ *
+ * Not a dependency of this package: these are installed by hand when the
+ * comparison is re-run. Every implementation is checked to agree on the probes
+ * before any of them is timed, and each takes the address as a string, which
+ * is the form a Worker has.
+ */
+import { readFileSync } from "node:fs";
+import { containsCidr } from "cidr-tools";
+import ipaddr from "ipaddr.js";
+import LongestPrefixMatch from "longest-prefix-match";
+
+const { IpTable } = await import("/Users/yaame/workspace/yaame/iplook/dist/index.js");
+const { TableBuilder } = await import(
+  "/Users/yaame/workspace/yaame/iplook/dist/build.js"
+);
+
+const file = process.argv[2];
+const LIMIT = Number(process.argv[3] ?? Infinity);
+let lines = readFileSync(file, "utf8")
+  .split("\n")
+  .filter((l) => l.trim() !== "");
+if (lines.length > LIMIT) lines = lines.slice(0, LIMIT);
+
+function retained(build) {
+  globalThis.gc();
+  globalThis.gc();
+  const before = process.memoryUsage().heapUsed;
+  const h = build();
+  globalThis.gc();
+  globalThis.gc();
+  return { bytes: process.memoryUsage().heapUsed - before, handle: h, ms: 0 };
+}
+function timedRetained(build) {
+  const t = Date.now();
+  const r = retained(build);
+  r.ms = Date.now() - t;
+  return r;
+}
+
+const impls = [];
+
+impls.push({
+  name: "iplook",
+  ...timedRetained(() => {
+    const b = new TableBuilder();
+    const id = b.valueId("in");
+    for (const l of lines) b.addPrefixId(l, id);
+    return new IpTable(b.build().buffer);
+  }),
+  has: (h, ip) => h.lookupId(ip) !== 0,
+});
+
+impls.push({
+  name: "longest-prefix-match",
+  ...timedRetained(() => {
+    const t = new LongestPrefixMatch();
+    for (const l of lines) t.addPrefix(l, { v: 1 });
+    return t;
+  }),
+  // Returns an array: [] is a miss, not null. Checking `!= null` counts
+  // every miss as a hit.
+  has: (h, ip) => h.getMatch(`${ip}/32`).length > 0,
+});
+
+impls.push({
+  name: "ipaddr.js subnetMatch",
+  ...timedRetained(() => {
+    const ranges = { in: lines.map((l) => ipaddr.parseCIDR(l)) };
+    return ranges;
+  }),
+  has: (h, ip) => ipaddr.subnetMatch(ipaddr.parse(ip), h, "out") === "in",
+});
+
+impls.push({
+  name: "cidr-tools containsCidr",
+  ...timedRetained(() => lines),
+  has: (h, ip) => containsCidr(h, ip),
+});
+
+// Probes: half hits, half misses, rotating.
+const N = 1024;
+const strs = new Array(N);
+let seed = 0xc0ffee;
+for (let i = 0; i < N; i++) {
+  if (i % 2 === 0) {
+    const [ip] = lines[(i * 7919) % lines.length].split("/");
+    const p = ip.split(".").map(Number);
+    strs[i] = `${p[0]}.${p[1]}.${p[2]}.${p[3]}`;
+  } else {
+    seed = (seed * 1103515245 + 12345) >>> 0;
+    strs[i] =
+      `${(seed >>> 24) & 255}.${(seed >>> 16) & 255}.${(seed >>> 8) & 255}.${seed & 255}`;
+  }
+}
+
+// Correctness before timing.
+const base = impls[0];
+console.log(
+  `\ncorpus  ${file.replace(/.*\//, "")}  ${lines.length.toLocaleString()} CIDR`,
+);
+for (const im of impls.slice(1)) {
+  let bad = 0;
+  for (let i = 0; i < 200; i++) {
+    if (im.has(im.handle, strs[i]) !== base.has(base.handle, strs[i])) bad++;
+  }
+  im.agrees = bad === 0 ? "agrees" : `${bad}/200 differ`;
+}
+base.agrees = "reference";
+
+function measure(im, budgetMs = 700) {
+  // Adaptive: a linear scanner cannot take the same iteration count as an
+  // indexed one, and forcing it to would take hours.
+  let iters = 64;
+  for (;;) {
+    const t = process.hrtime.bigint();
+    for (let i = 0; i < iters; i++) im.has(im.handle, strs[i & (N - 1)]);
+    const ms = Number(process.hrtime.bigint() - t) / 1e6;
+    if (ms > 60 || iters >= 4_000_000) break;
+    iters *= 4;
+  }
+  const s = [];
+  for (let r = 0; r < 10; r++) {
+    const t = process.hrtime.bigint();
+    for (let i = 0; i < iters; i++) im.has(im.handle, strs[i & (N - 1)]);
+    s.push(Number(process.hrtime.bigint() - t) / iters);
+  }
+  s.sort((a, b) => a - b);
+  const q1 = s[Math.floor(s.length * 0.25)],
+    q3 = s[Math.floor(s.length * 0.75)];
+  const iqr = q3 - q1;
+  const kept = s.filter((x) => x >= q1 - 1.5 * iqr && x <= q3 + 1.5 * iqr);
+  return { ns: kept[Math.floor(kept.length / 2)], iters };
+}
+
+console.log(
+  `\n  ${"library".padEnd(24)} ${"lookup".padStart(12)} ${"retained".padStart(11)} ${"build".padStart(8)}  agreement`,
+);
+const results = [];
+for (const im of impls) {
+  const m = measure(im);
+  results.push({ name: im.name, ns: m.ns });
+  const mem = im.bytes < 0 ? "n/a" : `${(im.bytes / 1048576).toFixed(2)} MB`;
+  console.log(
+    `  ${im.name.padEnd(24)} ${m.ns.toFixed(1).padStart(9)} ns ${mem.padStart(11)} ${(im.ms + "ms").padStart(8)}  ${im.agrees}`,
+  );
+}
+const fastest = results[0].ns;
+console.log();
+for (const r of results.slice(1)) {
+  console.log(`  iplook is ${(r.ns / fastest).toFixed(0)}x faster than ${r.name}`);
+}
