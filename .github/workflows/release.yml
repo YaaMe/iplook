@@ -62,13 +62,45 @@ jobs:
             exit 1
           fi
 
-      # Publishing something that does not pass its own gates is worse than
-      # not publishing, so they all run again here rather than trusting that
-      # CI ran on the commit.
-      - run: npx biome ci .
-      - run: npx tsc --noEmit
+      # What goes to the registry must have passed the *stronger* check, not a
+      # weaker one.
+      #
+      # This job runs on Node 24 alone. CI runs Node 20, 22 and 24, plus Bun,
+      # Deno and a workerd smoke test. Re-running a subset here would mean the
+      # published artefact cleared a lower bar than every pull request does, so
+      # instead this requires that CI already passed on this exact commit.
+      #
+      # A tag push does not trigger ci.yml — that runs on main and on pull
+      # requests — so there is no run on this ref to wait for. The commit is
+      # what carries the result, and a tag on a commit CI never saw is refused
+      # rather than published.
+      - name: CI passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "checking $sha"
+
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$sha/check-runs" \
+            --jq '.check_runs[] | select(.name != "publish") | "\(.conclusion // .status)\t\(.name)"')
+
+          if [ -z "$runs" ]; then
+            echo "no checks have run on this commit — is it on main?"
+            exit 1
+          fi
+          echo "$runs"
+
+          bad=$(echo "$runs" | grep -v '^success' || true)
+          if [ -n "$bad" ]; then
+            echo
+            echo "not every check succeeded:"
+            echo "$bad"
+            exit 1
+          fi
+
+      # Rebuild rather than trust an artefact: the tarball must come from the
+      # commit being tagged, and this is the only place it is produced.
       - run: npm run build
-      - run: npx vitest run
 
       # Staged, not published.
       #
