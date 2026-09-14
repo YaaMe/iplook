@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { containsCidr } from "cidr-tools";
 import ipaddr from "ipaddr.js";
+import { BartJS } from "./bart-reference.mjs";
 import LongestPrefixMatch from "longest-prefix-match";
 
 const { IpTable } = await import("/Users/yaame/workspace/yaame/iplook/dist/index.js");
@@ -26,19 +27,43 @@ const { TableBuilder } = await import(
 
 const file = process.argv[2];
 const LIMIT = Number(process.argv[3] ?? Infinity);
-let lines = readFileSync(file, "utf8")
+// Each row is a block and, optionally, a value: "1.2.3.0/24" or
+// "1.2.3.0/24,JP". Splitting once here means no structure below has to
+// re-parse the line, and every one of them is given the same thing.
+let rows = readFileSync(file, "utf8")
   .split("\n")
-  .filter((l) => l.trim() !== "");
-if (lines.length > LIMIT) lines = lines.slice(0, LIMIT);
+  .map((l) => l.split("#")[0].trim())
+  .filter((l) => l !== "")
+  .map((l) => {
+    const sep = l.search(/[\s,;]/);
+    return sep < 0
+      ? { block: l, value: "in" }
+      : { block: l.slice(0, sep), value: l.slice(sep + 1).trim() };
+  });
+if (rows.length > LIMIT) rows = rows.slice(0, LIMIT);
+const lines = rows.map((r) => r.block);
+const values = rows.map((r) => r.value);
 
+/**
+ * Retained bytes, counting ArrayBuffer backing stores.
+ *
+ * `heapUsed` alone does not: in V8 a typed array's storage is external, so a
+ * structure that is one ArrayBuffer measures as very nearly nothing — which is
+ * exactly what iplook is, and leaving `arrayBuffers` out understates it in its
+ * own favour by more than ten times.
+ */
 function retained(build) {
+  const total = () => {
+    const m = process.memoryUsage();
+    return m.heapUsed + m.arrayBuffers;
+  };
   globalThis.gc();
   globalThis.gc();
-  const before = process.memoryUsage().heapUsed;
+  const before = total();
   const h = build();
   globalThis.gc();
   globalThis.gc();
-  return { bytes: process.memoryUsage().heapUsed - before, handle: h, ms: 0 };
+  return { bytes: total() - before, handle: h, ms: 0 };
 }
 function timedRetained(build) {
   const t = Date.now();
@@ -110,11 +135,41 @@ impls.push({
   name: "iplook",
   ...timedRetained(() => {
     const b = new TableBuilder();
-    const id = b.valueId("in");
-    for (const l of lines) b.addPrefixId(l, id);
+    const ids = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      let id = ids.get(values[i]);
+      if (id === undefined) { id = b.valueId(values[i]); ids.set(values[i], id); }
+      b.addPrefixId(lines[i], id);
+    }
     return new IpTable(b.build().buffer);
   }),
   has: (h, ip) => h.lookupId(ip) !== 0,
+});
+
+impls.push({
+  // A stride-8 multibit trie with ART numbering and popcount compression —
+  // the approach gaissmai/bart takes, transcribed here so the comparison is
+  // same-language. Path compression is not implemented, which on a complete
+  // partition costs nothing: measured, every node carries a prefix and there
+  // are no single-child chains to collapse.
+  name: "bart (trie)",
+  ...timedRetained(() => {
+    const t = new BartJS();
+    const ids = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const slash = line.indexOf("/");
+      const v = parseV4(slash < 0 ? line : line.slice(0, slash));
+      let id = ids.get(values[i]);
+      if (id === undefined) { id = ids.size + 1; ids.set(values[i], id); }
+      t.insert(v, slash < 0 ? 32 : Number(line.slice(slash + 1)), id);
+    }
+    return t;
+  }),
+  has: (h, ip) => {
+    const v = parseV4(ip);
+    return v >= 0 && h.lookup(v) !== 0;
+  },
 });
 
 impls.push({
@@ -127,7 +182,7 @@ impls.push({
   name: "longest-prefix-match",
   ...timedRetained(() => {
     const t = new LongestPrefixMatch();
-    for (const l of lines) t.addPrefix(l, { v: 1 });
+    for (let i = 0; i < lines.length; i++) t.addPrefix(lines[i], { v: values[i] });
     return t;
   }),
   // Returns an array: [] is a miss, not null. Checking `!= null` counts
