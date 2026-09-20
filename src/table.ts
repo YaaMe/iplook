@@ -3,6 +3,7 @@
  */
 
 import {
+  checkLayout,
   FLAG_HAS_V4,
   FLAG_HAS_V6,
   FormatError,
@@ -17,6 +18,8 @@ import {
   indexBitsFor,
   MAX_INDEX_BITS,
   MIN_INDEX_BITS,
+  searchPlain1,
+  searchPlainN,
   searchStride1,
   searchStrideN,
 } from "./search.js";
@@ -63,6 +66,10 @@ export class IpTable {
     const { buffer, byteOffset, byteLength } = normalise(src);
     const view = new DataView(buffer, byteOffset, byteLength);
     const h = readHeader(view);
+    // Not gated on `validate`: that option is about trusting a well-formed
+    // table's partition invariants, and no option should let a read run off
+    // the end of what the caller gave us.
+    checkLayout(h, byteLength);
     this.header = h;
 
     const base = byteOffset;
@@ -174,20 +181,22 @@ export class IpTable {
     if (this.header.v4Count === 0) return NO_VALUE;
     const i = this.v4Index
       ? searchStride1(this.v4Starts, this.v4Index, this.v4Shift, v >>> 0)
-      : linear1(this.v4Starts, v >>> 0);
+      : searchPlain1(this.v4Starts, v >>> 0);
     return this.v4Values[i]!;
   }
 
   private lookupV6(a: Uint32Array): number {
-    if (this.header.v6Count === 0 || !this.v6Index) return NO_VALUE;
-    const i = searchStrideN(
-      this.v6Starts,
-      this.v6Index,
-      this.header.v6Count,
-      this.v6Stride,
-      this.v6Shift,
-      a,
-    );
+    if (this.header.v6Count === 0) return NO_VALUE;
+    const i = this.v6Index
+      ? searchStrideN(
+          this.v6Starts,
+          this.v6Index,
+          this.header.v6Count,
+          this.v6Stride,
+          this.v6Shift,
+          a,
+        )
+      : searchPlainN(this.v6Starts, this.header.v6Count, this.v6Stride, a);
     return this.v6Values[i]!;
   }
 
@@ -217,17 +226,6 @@ export class IpTable {
         this.v6Values.byteLength,
     };
   }
-}
-
-function linear1(starts: Uint32Array, v: number): number {
-  let lo = 0;
-  let hi = starts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >>> 1;
-    if (starts[mid]! <= v) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
 }
 
 /**
