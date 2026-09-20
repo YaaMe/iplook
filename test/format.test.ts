@@ -223,3 +223,85 @@ describe("what the table reports about itself", () => {
     }
   });
 });
+
+/**
+ * A view is a promise about how many bytes the caller is offering, and the
+ * sections are read off the *underlying* buffer — which, for a Node `Buffer` or
+ * any subarray, usually keeps going. A table truncated after its header used to
+ * load and answer out of whatever sat next to it: a confident wrong answer,
+ * which is the one thing a bundled lookup table must never do.
+ */
+describe("the loader stays inside the bytes it was given", () => {
+  function table(): Uint8Array {
+    const b = new TableBuilder();
+    b.addPrefix("1.2.3.0/24", "x");
+    b.addPrefix("2001:db8::/32", "y");
+    return new Uint8Array(b.build().buffer);
+  }
+
+  /** `bytes` placed at `offset` in a larger buffer, exposed as `length`. */
+  function embed(bytes: Uint8Array, offset: number, length: number): Uint8Array {
+    const backing = new Uint8Array(offset + bytes.length + 4096).fill(0xaa);
+    backing.set(bytes, offset);
+    return new Uint8Array(backing.buffer, offset, length);
+  }
+
+  it("rejects a view cut off after the header", () => {
+    const t = table();
+    expect(() => new IpTable(embed(t, 0, HEADER_LENGTH))).toThrow(FormatError);
+    expect(() => new IpTable(embed(t, 0, HEADER_LENGTH))).toThrow(/truncated/);
+  });
+
+  it("rejects a view cut off part-way through the sections", () => {
+    const t = table();
+    const h = readHeader(new DataView(t.buffer, t.byteOffset, t.byteLength));
+    const end = h.dictBytesOffset + h.dictBytesLength; // last byte anyone reads
+
+    for (const cut of [HEADER_LENGTH + 8, end >> 1, end - 1]) {
+      expect(() => new IpTable(embed(t, 0, cut))).toThrow(FormatError);
+    }
+
+    // The bound is the last section, not the file: a writer aligns the tail up
+    // to 8 bytes, and those bytes are nobody's data.
+    expect(new IpTable(embed(t, 0, end)).lookup("1.2.3.4")).toBe("x");
+  });
+
+  // The two offsets take different paths through `normalise`: 8-aligned keeps
+  // the caller's buffer and offset, anything else copies. Both have to bound
+  // the sections by the view, not by the buffer behind it.
+  for (const offset of [8, 64, 3, 9]) {
+    it(`bounds by the view, not the buffer, at offset ${offset}`, () => {
+      const t = table();
+      const whole = new IpTable(embed(t, offset, t.length));
+      expect(whole.lookup("1.2.3.4")).toBe("x");
+      expect(whole.lookup("2001:db8::1")).toBe("y");
+
+      expect(() => new IpTable(embed(t, offset, HEADER_LENGTH))).toThrow(/truncated/);
+    });
+  }
+
+  it("still takes a plain ArrayBuffer and an exact view", () => {
+    const t = table();
+    expect(new IpTable(t.buffer as ArrayBuffer).lookup("1.2.3.4")).toBe("x");
+    expect(new IpTable(t).lookup("1.2.3.4")).toBe("x");
+  });
+
+  it("rejects a header whose sections do not fit, even with validation off", () => {
+    const t = table();
+    expect(() => new IpTable(embed(t, 0, HEADER_LENGTH), { validate: false })).toThrow(
+      FormatError,
+    );
+  });
+
+  it("rejects a section offset that would land inside the header", () => {
+    const buf = new ArrayBuffer(4096);
+    writeHeader(new DataView(buf), { ...header(), v4StartsOffset: 32 });
+    expect(() => new IpTable(buf)).toThrow(/overlaps the header/);
+  });
+
+  it("rejects a section offset a typed array could not view", () => {
+    const buf = new ArrayBuffer(4096);
+    writeHeader(new DataView(buf), { ...header(), v4StartsOffset: 66 });
+    expect(() => new IpTable(buf)).toThrow(/aligned/);
+  });
+});

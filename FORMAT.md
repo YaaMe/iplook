@@ -57,6 +57,14 @@ another, and every section begins on an **8-byte boundary**. Both rules exist
 so a reader can take typed-array views directly and so a later version can add
 a section without moving the existing ones.
 
+Offsets are relative to the start of the table, and a reader **must** check,
+before viewing any of them, that `offset + size` falls within the bytes it was
+actually handed — not within whatever buffer those bytes happen to live in. A
+truncated table has to be refused: a reader that views past the end answers out
+of unrelated memory and never says so. Trailing padding after the last section
+is not required, so the bound is the end of the last section, not the end of
+the file.
+
 ### Versioning
 
 `minReaderVersion` is the whole compatibility mechanism.

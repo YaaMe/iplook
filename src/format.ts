@@ -132,6 +132,55 @@ export function writeHeader(view: DataView, h: Header): void {
   view.setUint32(O_META_LEN, h.metaLength, true);
 }
 
+/**
+ * Check that every section the header points at lies inside the bytes we were
+ * given.
+ *
+ * `readHeader` only ever sees the first 64 bytes, so a header alone is enough
+ * to make it happy — and the section views are built on the *underlying*
+ * ArrayBuffer, which for a `Buffer` or a subarray may run far past the view
+ * the caller handed us. Without this, a table truncated after its header loads
+ * and answers from whatever bytes happen to sit next to it: a wrong answer
+ * with no error, which is the one failure this format is supposed to rule out.
+ *
+ * `byteLength` is the caller's view, not the whole buffer. Offsets are
+ * relative to the start of the table, and the base is 8-aligned by the time
+ * this runs, so checking a section's own offset settles its alignment.
+ */
+export function checkLayout(h: Header, byteLength: number): void {
+  if (h.headerLength < HEADER_LENGTH) {
+    throw new FormatError(
+      `bad header length ${h.headerLength}, expected at least ${HEADER_LENGTH}`,
+    );
+  }
+
+  const section = (name: string, offset: number, size: number, align: number): void => {
+    if (offset % align !== 0) {
+      throw new FormatError(`${name} section at ${offset} is not ${align}-byte aligned`);
+    }
+    if (offset < h.headerLength) {
+      throw new FormatError(`${name} section at ${offset} overlaps the header`);
+    }
+    if (offset + size > byteLength) {
+      throw new FormatError(
+        `truncated table: ${name} section needs bytes ${offset}..${offset + size} of ${byteLength}`,
+      );
+    }
+  };
+
+  if ((h.flags & FLAG_HAS_V4) !== 0) {
+    section("IPv4 starts", h.v4StartsOffset, h.v4Count * 4, 4);
+    section("IPv4 values", h.v4ValuesOffset, h.v4Count * h.valueWidth, h.valueWidth);
+  }
+  if ((h.flags & FLAG_HAS_V6) !== 0) {
+    section("IPv6 starts", h.v6StartsOffset, h.v6Count * h.v6Stride * 4, 4);
+    section("IPv6 values", h.v6ValuesOffset, h.v6Count * h.valueWidth, h.valueWidth);
+  }
+  section("dictionary index", h.dictIndexOffset, (h.dictCount + 1) * 4, 4);
+  section("dictionary bytes", h.dictBytesOffset, h.dictBytesLength, 1);
+  if (h.metaLength > 0) section("metadata", h.metaOffset, h.metaLength, 1);
+}
+
 export function readHeader(view: DataView): Header {
   if (view.byteLength < HEADER_LENGTH) {
     throw new FormatError(

@@ -144,6 +144,41 @@ export function searchStrideN(
   return lo;
 }
 
+/**
+ * The span containing `v` with no index: a plain binary search, stride 1.
+ *
+ * This is what `index: false` costs — the same answer, a few more comparisons,
+ * and not a byte of heap. Both fallbacks live next to the indexed searches so
+ * the two paths can be read against each other.
+ */
+export function searchPlain1(starts: Uint32Array, v: number): number {
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (starts[mid]! <= v) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** The span containing `a[0..stride)` with no index: a plain binary search. */
+export function searchPlainN(
+  starts: Uint32Array,
+  count: number,
+  stride: number,
+  a: Uint32Array,
+): number {
+  let lo = 0;
+  let hi = count - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (lessOrEqual(starts, mid * stride, stride, a)) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 /** `starts[off..off+stride) <= a[0..stride)`, compared most significant word first. */
 function lessOrEqual(
   starts: Uint32Array,
