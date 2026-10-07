@@ -138,8 +138,10 @@ export function indexOfSlash(s: string, start: number, end: number): number {
  * in some configurations, and a caller asking about it means the IPv4 address.
  * The consequence is that whatever an IPv6 table says about `::ffff:0:0/96` is
  * unreachable through this API, which is the right trade and is documented.
+ * Pass `unmapMapped = false` when parsing a prefix whose IPv6 length still
+ * needs to be applied before deciding whether it lies inside the mapped /96.
  */
-export function parseAddr(s: string, out: Uint32Array): number {
+export function parseAddr(s: string, out: Uint32Array, unmapMapped = true): number {
   const n = s.length;
   if (n === 0) return FAMILY_NONE;
 
@@ -222,6 +224,7 @@ export function parseAddr(s: string, out: Uint32Array): number {
 
   // ::ffff:a.b.c.d — answer about the IPv4 address the caller means.
   if (
+    unmapMapped &&
     expanded[0] === 0 &&
     expanded[1] === 0 &&
     expanded[2] === 0 &&

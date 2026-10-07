@@ -217,3 +217,44 @@ describe("input that arrives from a file", () => {
     );
   });
 });
+
+describe("IPv4-mapped IPv6 prefixes", () => {
+  for (const addr of ["::ffff:192.0.2.7", "::ffff:c000:207", "0:0:0:0:0:ffff:c000:207"]) {
+    it.each([
+      [96, "0.0.0.0/0"],
+      [120, "192.0.2.0/24"],
+      [128, "192.0.2.7/32"],
+    ])(`maps ${addr}/%i to %s after masking host bits`, (len, cidr) => {
+      const mapped = new TableBuilder();
+      mapped.addPrefix(`${addr}/${len}`, "x");
+      const ordinary = new TableBuilder();
+      ordinary.addPrefix(cidr, "x");
+      expect(new Uint8Array(mapped.build().buffer)).toEqual(
+        new Uint8Array(ordinary.build().buffer),
+      );
+      const t = new IpTable(mapped.build().buffer);
+      expect(t.lookup(addr)).toBe("x");
+      expect(t.lookup("192.0.2.7")).toBe("x");
+    });
+  }
+
+  it("treats a bare mapped address as a single IPv4 host", () => {
+    const t = buildFrom([{ cidr: "::ffff:192.0.2.7", value: "x" }]);
+    expect(t.lookup("192.0.2.7")).toBe("x");
+    expect(t.lookup("192.0.2.6")).toBeUndefined();
+    expect(t.lookup("192.0.2.8")).toBeUndefined();
+  });
+
+  it("retains IPv6 semantics for prefixes wider than the mapped /96", () => {
+    const t = buildFrom([{ cidr: "::ffff:192.0.2.7/95", value: "v6" }]);
+    expect(t.size.v4).toBe(0);
+    expect(t.lookup("::fffe:0:1")).toBe("v6");
+    expect(t.lookup("::fffd:0:1")).toBeUndefined();
+    expect(t.lookup("192.0.2.7")).toBeUndefined();
+
+    const wide = buildFrom([{ cidr: "::ffff:192.0.2.7/24", value: "wide" }]);
+    expect(wide.lookup("::1")).toBe("wide");
+    expect(wide.lookup("0:100::")).toBeUndefined();
+    expect(wide.lookup("192.0.2.7")).toBeUndefined();
+  });
+});

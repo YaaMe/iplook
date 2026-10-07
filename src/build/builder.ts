@@ -75,7 +75,7 @@ export class TableBuilder {
     const cidr = raw.trim();
     const slash = indexOfSlash(cidr, 0, cidr.length);
     const addr = slash < 0 ? cidr : cidr.slice(0, slash);
-    const fam = parseAddr(addr, this.scratch);
+    const fam = parseAddr(addr, this.scratch, false);
 
     if (fam === FAMILY_V4) {
       const len = slash < 0 ? 32 : parsePrefixLen(cidr, slash + 1, cidr.length, 32);
@@ -90,6 +90,17 @@ export class TableBuilder {
       const len = slash < 0 ? 128 : parsePrefixLen(cidr, slash + 1, cidr.length, 128);
       if (len < 0) throw new InputError(badLen(cidr, slash, 128));
       maskInPlace6(this.scratch, len);
+      // Only prefixes wholly inside ::ffff:0:0/96 can be represented as IPv4.
+      // Wider prefixes retain their IPv6 meaning after their host bits are masked.
+      if (
+        len >= 96 &&
+        this.scratch[0] === 0 &&
+        this.scratch[1] === 0 &&
+        this.scratch[2] === 0xffff
+      ) {
+        this.addBlock(this.scratch[3]!, len - 96, id);
+        return;
+      }
       this.addBlock6(this.scratch, len, id);
       return;
     }

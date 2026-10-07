@@ -23,6 +23,15 @@ describe("fromText", () => {
     expect(t.lookup("172.16.0.1")).toBe("vpn");
   });
 
+  it("accepts mapped IPv6 prefixes with IPv6 prefix lengths", () => {
+    const t = fromText("::ffff:192.0.2.7/120,mapped\n::ffff:c633:6401/128,host");
+    expect(t.lookup("192.0.2.0")).toBe("mapped");
+    expect(t.lookup("192.0.2.255")).toBe("mapped");
+    expect(t.lookup("192.0.3.0")).toBeUndefined();
+    expect(t.lookup("198.51.100.1")).toBe("host");
+    expect(t.lookup("198.51.100.2")).toBeUndefined();
+  });
+
   it("skips comments and blank lines", () => {
     const t = fromText("# a list\n\n10.0.0.0/8   # private\n\n  \n");
     expect(t.lookup("10.0.0.1")).toBe("in");
