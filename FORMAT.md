@@ -52,6 +52,12 @@ either answers wrongly for the rest of its life without erroring.
 | 56 | 4 | metaOffset | 0 when absent |
 | 60 | 4 | metaLength | |
 
+Each address-family flag must be set exactly when its corresponding span count
+is nonzero. An absent family has a zero count and a clear flag; both families
+may be absent in an empty table. Readers must reject inconsistent flags and
+counts before constructing section views or indexes, even when optional
+content validation is disabled.
+
 Every section is found by its **absolute offset**, never by assuming it follows
 another, and every section begins on an **8-byte boundary**. Both rules exist
 so a reader can take typed-array views directly and so a later version can add
@@ -100,6 +106,7 @@ Comparison is word by word from the most significant.
 
 `v4Count` (resp. `v6Count`) unsigned integers of `valueWidth` bytes, one per
 span, at the corresponding offset. The id indexes the dictionary.
+Every id must be less than `dictCount`; a reader must reject invalid references.
 
 `valueWidth` is the narrowest that fits `dictCount`: 1 for up to 256 values,
 2 for up to 65536, 4 above. Country codes fit a byte; ASNs do not.
@@ -110,6 +117,10 @@ At `dictIndexOffset`, `dictCount + 1` u32 byte offsets into the blob at
 `dictBytesOffset`. Entry *i* is `blob[index[i] .. index[i+1])`, UTF-8.
 
 **Index 0 is reserved and is the empty string.** It is the "no value" id.
+`dictCount` must be at least 1, and `index[0]` and `index[1]` must both be 0.
+All offsets must be nondecreasing and at most `dictBytesLength`; the final
+offset `index[dictCount]` must equal `dictBytesLength`. A reader must validate
+these constraints before decoding dictionary entries.
 
 Ids are assigned in **sorted order of the value string**. This makes the output
 byte-identical regardless of the order the inputs were read in, which matters

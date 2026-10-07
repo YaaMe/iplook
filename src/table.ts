@@ -38,7 +38,7 @@ export interface LoadOptions {
    *   state: whatever you choose, every answer is identical.
    */
   index?: boolean | number;
-  /** Check the partition invariants at load. Default true. */
+  /** Check partition invariants, value IDs and dictionary offsets at load. Default true. */
   validate?: boolean;
 }
 
@@ -66,9 +66,9 @@ export class IpTable {
     const { buffer, byteOffset, byteLength } = normalise(src);
     const view = new DataView(buffer, byteOffset, byteLength);
     const h = readHeader(view);
-    // Not gated on `validate`: that option is about trusting a well-formed
-    // table's partition invariants, and no option should let a read run off
-    // the end of what the caller gave us.
+    // Not gated on `validate`: family declarations and section bounds must
+    // agree before any views or indexes are built. The option only skips
+    // content checks within those sections.
     checkLayout(h, byteLength);
     this.header = h;
 
@@ -91,7 +91,7 @@ export class IpTable {
       ? readValues(buffer, base + h.v6ValuesOffset, h.v6Count, h.valueWidth)
       : new Uint8Array(0);
 
-    this.values = readDict(buffer, base, h);
+    this.values = readDict(buffer, base, h, opts.validate !== false);
 
     if (opts.validate !== false) this.validate();
 
@@ -132,6 +132,15 @@ export class IpTable {
    * spans.
    */
   private validate(): void {
+    for (const values of [this.v4Values, this.v6Values]) {
+      for (let i = 0; i < values.length; i++) {
+        if (values[i]! >= this.header.dictCount) {
+          throw new FormatError(
+            `value id ${values[i]} at span ${i} is outside the dictionary`,
+          );
+        }
+      }
+    }
     if (this.header.v4Count > 0) {
       if (this.v4Starts[0] !== 0) {
         throw new FormatError("IPv4 partition does not start at 0.0.0.0");
@@ -268,9 +277,27 @@ function readValues(
   return new Uint32Array(buffer, offset, count);
 }
 
-function readDict(buffer: ArrayBuffer, base: number, h: Header): readonly string[] {
+function readDict(
+  buffer: ArrayBuffer,
+  base: number,
+  h: Header,
+  validate: boolean,
+): readonly string[] {
   const index = new Uint32Array(buffer, base + h.dictIndexOffset, h.dictCount + 1);
   const blob = new Uint8Array(buffer, base + h.dictBytesOffset, h.dictBytesLength);
+  if (validate) {
+    if (h.dictCount === 0 || index[0] !== 0 || index[1] !== 0) {
+      throw new FormatError("dictionary must start with the reserved empty value");
+    }
+    for (let i = 1; i < index.length; i++) {
+      if (index[i]! < index[i - 1]! || index[i]! > blob.length) {
+        throw new FormatError(`invalid dictionary offset at index ${i}`);
+      }
+    }
+    if (index[h.dictCount] !== blob.length) {
+      throw new FormatError("dictionary final offset does not match its byte length");
+    }
+  }
   const dec = new TextDecoder();
   const out: string[] = [];
   for (let i = 0; i < h.dictCount; i++) {

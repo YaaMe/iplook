@@ -133,8 +133,8 @@ export function writeHeader(view: DataView, h: Header): void {
 }
 
 /**
- * Check that every section the header points at lies inside the bytes we were
- * given.
+ * Check that family flags agree with span counts and that every section the
+ * header points at lies inside the bytes we were given.
  *
  * `readHeader` only ever sees the first 64 bytes, so a header alone is enough
  * to make it happy — and the section views are built on the *underlying*
@@ -154,6 +154,15 @@ export function checkLayout(h: Header, byteLength: number): void {
     );
   }
 
+  const hasV4 = (h.flags & FLAG_HAS_V4) !== 0;
+  const hasV6 = (h.flags & FLAG_HAS_V6) !== 0;
+  if (hasV4 !== h.v4Count > 0) {
+    throw new FormatError("IPv4 flag does not match its span count");
+  }
+  if (hasV6 !== h.v6Count > 0) {
+    throw new FormatError("IPv6 flag does not match its span count");
+  }
+
   const section = (name: string, offset: number, size: number, align: number): void => {
     if (offset % align !== 0) {
       throw new FormatError(`${name} section at ${offset} is not ${align}-byte aligned`);
@@ -168,11 +177,11 @@ export function checkLayout(h: Header, byteLength: number): void {
     }
   };
 
-  if ((h.flags & FLAG_HAS_V4) !== 0) {
+  if (hasV4) {
     section("IPv4 starts", h.v4StartsOffset, h.v4Count * 4, 4);
     section("IPv4 values", h.v4ValuesOffset, h.v4Count * h.valueWidth, h.valueWidth);
   }
-  if ((h.flags & FLAG_HAS_V6) !== 0) {
+  if (hasV6) {
     section("IPv6 starts", h.v6StartsOffset, h.v6Count * h.v6Stride * 4, 4);
     section("IPv6 values", h.v6ValuesOffset, h.v6Count * h.valueWidth, h.valueWidth);
   }

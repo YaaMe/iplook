@@ -3,6 +3,8 @@ import { TableBuilder } from "../src/build/builder.js";
 import { Dict } from "../src/build/dict.js";
 import {
   align,
+  FLAG_HAS_V4,
+  FLAG_HAS_V6,
   FORMAT_VERSION,
   FormatError,
   HEADER_LENGTH,
@@ -305,3 +307,122 @@ describe("the loader stays inside the bytes it was given", () => {
     expect(() => new IpTable(buf)).toThrow(/aligned/);
   });
 });
+
+describe("the loader validates dictionary contents and references", () => {
+  function validTable(): ArrayBuffer {
+    const b = new TableBuilder();
+    b.addPrefix("10.0.0.0/8", "office");
+    b.addPrefix("2001:db8::/32", "東京");
+    return b.build().buffer;
+  }
+
+  it.each(["IPv4", "IPv6"])("rejects an out-of-range %s value id", (family) => {
+    const buffer = validTable();
+    const h = readHeader(new DataView(buffer));
+    const offset = family === "IPv4" ? h.v4ValuesOffset : h.v6ValuesOffset;
+    new Uint8Array(buffer)[offset + 1] = 255;
+    expect(() => new IpTable(buffer)).toThrow(FormatError);
+    expect(() => new IpTable(buffer)).toThrow(/value id/);
+  });
+
+  it.each([
+    ["outside the blob", 1, 0xffffffff],
+    ["nonzero first offset", 0, 1],
+    ["nonempty reserved id", 1, 1],
+    ["out-of-range interior offset", 2, 0xffffffff],
+    ["descending offsets", 3, 5],
+    ["incomplete final offset", 3, 11],
+  ])("rejects dictionary indices with %s", (_name, index, value) => {
+    const buffer = validTable();
+    const h = readHeader(new DataView(buffer));
+    const offsets = new Uint32Array(buffer, h.dictIndexOffset, h.dictCount + 1);
+    // The sorted values are ["", "office", "東京"], occupying 12 UTF-8 bytes.
+    offsets[index] = value;
+    expect(() => new IpTable(buffer)).toThrow(FormatError);
+  });
+
+  it("rejects a dictionary without its reserved empty entry", () => {
+    const buffer = validTable();
+    const view = new DataView(buffer);
+    writeHeader(view, { ...readHeader(view), dictCount: 0 });
+    expect(() => new IpTable(buffer)).toThrow(FormatError);
+  });
+
+  it.each([
+    [1, 1],
+    [2, 256],
+    [4, 65536],
+  ])("loads and validates %i-byte value IDs", (width, count) => {
+    const b = new TableBuilder();
+    let id = 0;
+    for (let i = 0; i < count; i++)
+      id = b.valueId(`value-${i.toString().padStart(5, "0")}`);
+    b.addPrefixId("10.0.0.0/8", id);
+    b.addPrefixId("2001:db8::/32", id);
+    const valid = b.build().buffer;
+    const h = readHeader(new DataView(valid));
+    expect(h.valueWidth).toBe(width);
+    const t = new IpTable(valid);
+    expect(t.lookup("10.0.0.1")).toBe(`value-${(count - 1).toString().padStart(5, "0")}`);
+    expect(t.lookup("2001:db8::1")).toBe(t.lookup("10.0.0.1"));
+    for (const offset of [h.v4ValuesOffset, h.v6ValuesOffset]) {
+      const corrupt = valid.slice(0);
+      const view = new DataView(corrupt);
+      if (width === 1) view.setUint8(offset + width, h.dictCount);
+      else if (width === 2) view.setUint16(offset + width, h.dictCount, true);
+      else view.setUint32(offset + width, h.dictCount, true);
+      expect(() => new IpTable(corrupt)).toThrow(FormatError);
+    }
+  });
+
+  it("still loads empty tables and Unicode dictionaries", () => {
+    const empty = new IpTable(new TableBuilder().build().buffer);
+    expect(empty.values).toEqual([""]);
+    expect(empty.lookup("10.0.0.1")).toBeUndefined();
+    expect(new IpTable(validTable()).lookup("2001:db8::1")).toBe("東京");
+  });
+});
+
+describe.each([
+  { family: "IPv4", prefix: "0.0.0.0/0", flag: FLAG_HAS_V4, count: "v4Count" },
+  { family: "IPv6", prefix: "::/0", flag: FLAG_HAS_V6, count: "v6Count" },
+] as const)("$family family declarations", ({ prefix, flag, count }) => {
+  function singleSpan(): ArrayBuffer {
+    const b = new TableBuilder();
+    b.addPrefix(prefix, "A");
+    return b.build().buffer;
+  }
+
+  it.each([{}, { validate: false }])(
+    "rejects a cleared flag with a nonzero count and options %j",
+    (opts) => {
+      const buffer = singleSpan();
+      expect(new IpTable(buffer, opts).lookup(prefix.split("/")[0]!)).toBe("A");
+      const view = new DataView(buffer);
+      const h = readHeader(view);
+      writeHeader(view, { ...h, flags: h.flags & ~flag });
+      expect(() => new IpTable(buffer, opts)).toThrow(FormatError);
+    },
+  );
+
+  it.each([{}, { validate: false }])(
+    "rejects a set flag with a zero count and options %j",
+    (opts) => {
+      const buffer = singleSpan();
+      const view = new DataView(buffer);
+      writeHeader(view, { ...readHeader(view), [count]: 0 });
+      expect(() => new IpTable(buffer, opts)).toThrow(FormatError);
+    },
+  );
+});
+
+it.each([{}, { validate: false }])(
+  "loads a legitimate empty table with options %j",
+  (opts) => {
+    const t = new IpTable(new TableBuilder().build().buffer, opts);
+    expect(t.size.v4).toBe(0);
+    expect(t.size.v6).toBe(0);
+    expect(t.lookup("0.0.0.0")).toBeUndefined();
+    expect(t.lookup("::")).toBeUndefined();
+  },
+);
