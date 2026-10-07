@@ -15,7 +15,10 @@
 import { NO_VALUE } from "../format.js";
 import { radixSortIndices } from "./radix.js";
 
-/** How to resolve two blocks that cover an address with different values. */
+/**
+ * Nesting always uses the longest prefix. For duplicate prefixes with different
+ * values, "longest" keeps the first, "last" keeps the last, and "error" rejects.
+ */
 export type ConflictPolicy = "longest" | "error" | "last";
 
 export interface SweepInput {

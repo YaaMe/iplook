@@ -6,13 +6,13 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import { TableBuilder } from "../build/builder.js";
 import { readHeader } from "../format.js";
 import { indexBitsFor, MAX_INDEX_BITS, MIN_INDEX_BITS } from "../search.js";
 import { IpTable } from "../table.js";
-import { forEachLine } from "./read-lines.js";
+import { conflictPolicy, readInputs } from "./inputs.js";
+import { compareTables } from "./verify.js";
 
 const USAGE = `iplook — an IP lookup table small enough to bundle
 
@@ -28,12 +28,15 @@ const USAGE = `iplook — an IP lookup table small enough to bundle
       --index                      measure which index width suits this data
   iplook lookup  <table.iplk> <ip...>
   iplook verify  <table.iplk> --against <inputs...>
+      --against <inputs...>       repeatable; paths are read in argument order
+      --value <v>                  default value (otherwise from the file name)
+      --value-from-filename        explicitly select file-name values
+      --value-pattern <re>         a different pattern, capturing group 1
+      --on-conflict longest|error|last   use the same policy as build
 
 A line is "1.2.3.0/24", or "1.2.3.0/24,JP" with the value inline. Blank lines
 and everything after "#" are ignored.
 `;
-
-const DEFAULT_STEM = /(?:^|_)([^_/\\]+)\.[^.]+$/;
 
 async function main(argv: string[]): Promise<number> {
   const verb = argv[0];
@@ -42,18 +45,20 @@ async function main(argv: string[]): Promise<number> {
     return verb ? 0 : 1;
   }
 
-  switch (verb) {
-    case "build":
-      return await cmdBuild(argv.slice(1));
-    case "inspect":
-      return cmdInspect(argv.slice(1));
-    case "lookup":
-      return cmdLookup(argv.slice(1));
-    case "verify":
-      return await cmdVerify(argv.slice(1));
-    default:
-      process.stderr.write(`iplook: unknown command "${verb}"\n\n${USAGE}`);
-      return 1;
+  const run = COMMANDS[verb];
+  if (!run) {
+    process.stderr.write(`iplook: unknown command "${verb}"\n\n${USAGE}`);
+    return 1;
+  }
+  // Every message thrown from a command gets its verb here, once; a throw site
+  // must not name the command itself.
+  try {
+    return await run(argv.slice(1));
+  } catch (err) {
+    process.stderr.write(
+      `iplook ${verb}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 1;
   }
 }
 
@@ -76,7 +81,7 @@ async function cmdBuild(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const policy = (flags["on-conflict"] ?? "longest") as "longest" | "error" | "last";
+  const policy = conflictPolicy(flags["on-conflict"]);
   const meta: Record<string, unknown> = {};
   for (const kv of flags.meta ?? []) {
     const eq = kv.indexOf("=");
@@ -88,58 +93,13 @@ async function cmdBuild(argv: string[]): Promise<number> {
     ...(Object.keys(meta).length > 0 ? { meta } : {}),
   });
 
-  const fromName = flags["value-from-filename"]
-    ? flags["value-pattern"]
-      ? new RegExp(flags["value-pattern"])
-      : DEFAULT_STEM
-    : undefined;
-
-  const dec = new TextDecoder();
-  let lines = 0;
   const started = Date.now();
-
-  for (const path of positionals) {
-    let fileId = 0;
-    if (fromName) {
-      const m = fromName.exec(basename(path));
-      if (!m?.[1]) {
-        process.stderr.write(`iplook build: no value in file name: ${path}\n`);
-        return 1;
-      }
-      fileId = builder.valueId(m[1]);
-    } else if (flags.value) {
-      fileId = builder.valueId(flags.value);
-    }
-
-    await forEachLine(path, (buf, start, end) => {
-      let stop = end;
-      for (let i = start; i < end; i++) {
-        if (buf[i] === 35) {
-          stop = i;
-          break;
-        }
-      }
-      while (stop > start && buf[stop - 1]! <= 32) stop--;
-      let from = start;
-      while (from < stop && buf[from]! <= 32) from++;
-      if (from >= stop) return;
-
-      const line = dec.decode(buf.subarray(from, stop));
-      const sep = line.search(/[\s,;]/);
-      const block = sep < 0 ? line : line.slice(0, sep);
-      const inline = sep < 0 ? "" : line.slice(sep + 1).trim();
-
-      const id = inline !== "" ? builder.valueId(inline) : fileId;
-      if (id === 0) {
-        process.stderr.write(
-          `iplook build: ${path}: no value for "${block}" — pass --value or --value-from-filename\n`,
-        );
-        process.exit(1);
-      }
-      builder.addPrefixId(block, id);
-      lines++;
-    });
-  }
+  const lines = await readInputs(builder, positionals, {
+    value: flags.value,
+    fromFilename: flags["value-from-filename"],
+    pattern: flags["value-pattern"],
+    requireFilenameValue: true,
+  });
 
   const { buffer, stats } = builder.build();
   writeFileSync(flags.out, new Uint8Array(buffer));
@@ -351,64 +311,70 @@ function cmdLookup(argv: string[]): number {
   return 0;
 }
 
-/**
- * Replay the inputs against the built table.
- *
- * This is the user's reason to trust the artefact, and it is the same check
- * the test suite runs against synthetic corpora: every block's first and last
- * address, and the addresses either side of them, must answer what the input
- * said.
- */
+/** Rebuild the expected mapping, then compare the complete partitions. */
 async function cmdVerify(argv: string[]): Promise<number> {
-  const { values: flags, positionals } = parseArgs({
+  const { values: flags, tokens } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { against: { type: "string", multiple: true } },
+    tokens: true,
+    options: {
+      against: { type: "string", multiple: true },
+      value: { type: "string" },
+      "value-from-filename": { type: "boolean" },
+      "value-pattern": { type: "string" },
+      "on-conflict": { type: "string" },
+    },
   });
-  const path = positionals[0];
-  const inputs = flags.against ?? [];
+  let path: string | undefined;
+  const inputs: string[] = [];
+  let against = false;
+  for (const token of tokens) {
+    if (token.kind === "option" && token.name === "against") {
+      if (!path) throw new Error("table must precede --against");
+      against = true;
+      inputs.push(token.value!);
+    } else if (token.kind === "positional") {
+      if (against) inputs.push(token.value);
+      else if (!path) path = token.value;
+      else throw new Error(`unexpected argument before --against: ${token.value}`);
+    }
+  }
   if (!path || inputs.length === 0) {
     process.stderr.write("iplook verify: need a table and --against <inputs...>\n");
     return 1;
   }
 
-  const t = load(path);
-  const dec = new TextDecoder();
-  let checked = 0;
-  let bad = 0;
-
-  for (const input of inputs) {
-    const m = DEFAULT_STEM.exec(basename(input));
-    const fileValue = m?.[1];
-    await forEachLine(input, (buf, start, end) => {
-      const line = dec.decode(buf.subarray(start, end)).split("#")[0]!.trim();
-      if (line === "") return;
-      const sep = line.search(/[\s,;]/);
-      const block = sep < 0 ? line : line.slice(0, sep);
-      const want = sep < 0 ? fileValue : line.slice(sep + 1).trim();
-      if (!want) return;
-
-      const slash = block.indexOf("/");
-      const addr = slash < 0 ? block : block.slice(0, slash);
-      checked++;
-      if (t.lookup(addr) !== want) {
-        if (bad < 10) {
-          process.stderr.write(
-            `  ${addr}: table says ${t.lookup(addr) ?? "-"}, input says ${want}\n`,
-          );
-        }
-        bad++;
-      }
-    });
-  }
+  const builder = new TableBuilder({ onConflict: conflictPolicy(flags["on-conflict"]) });
+  const checked = await readInputs(builder, inputs, {
+    value: flags.value,
+    fromFilename: flags["value-from-filename"] ?? flags.value === undefined,
+    pattern: flags["value-pattern"],
+  });
+  const { buffer } = builder.build();
+  const bad = compareTables(
+    readFileSync(path),
+    new Uint8Array(buffer),
+    (addr, got, want) => {
+      process.stderr.write(
+        `  ${addr}: table says ${got ?? "-"}, input says ${want ?? "-"}\n`,
+      );
+    },
+  );
 
   process.stdout.write(
     bad === 0
       ? `verify    ${checked.toLocaleString()} blocks agree\n`
-      : `verify    ${bad.toLocaleString()} of ${checked.toLocaleString()} disagree\n`,
+      : `verify    ${bad.toLocaleString()} intervals disagree (${checked.toLocaleString()} blocks checked)\n`,
   );
   return bad === 0 ? 0 : 1;
 }
+
+const COMMANDS: Record<string, (argv: string[]) => number | Promise<number>> = {
+  build: cmdBuild,
+  inspect: cmdInspect,
+  lookup: cmdLookup,
+  verify: cmdVerify,
+};
 
 main(process.argv.slice(2))
   .then((code) => process.exit(code))

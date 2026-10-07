@@ -246,8 +246,21 @@ npx iplook verify geo.iplk --against cidr/*.txt
 #   verify    10,014,241 blocks agree
 ```
 
-Every block goes back through the table it produced. On the corpus above that
-is ten million checks in 5.3 s.
+`verify` rebuilds the expected mapping and compares every interval formed by
+either table's boundaries, for both IPv4 and IPv6. It detects missing coverage,
+wrong values inside a prefix, and extra coverage outside the inputs. This uses
+memory comparable to a build. A failure reports differing intervals and exits
+with status 1; success reports the number of input blocks checked.
+
+One `--against` accepts multiple paths, including a shell-expanded glob; it
+can also be repeated. Inputs are read in argument order, and the table path
+must precede `--against`. Inline values take precedence. Otherwise, values
+come from file names by default; pass the same `--value`, `--value-pattern`
+and `--on-conflict` settings used for the build when applicable.
+
+Nesting always uses the longest prefix. For duplicate prefixes with different
+values, `--on-conflict longest` (the default) keeps the first, `last` keeps the
+last, and `error` rejects the input. These rules apply to both build and verify.
 
 `iplook inspect` reports the header, counts and size. `iplook lookup` answers
 a single address without writing a Worker.
@@ -307,7 +320,10 @@ table.size: { v4, v6, bytes }
 ```
 
 `LoadOptions.index` (default true) builds the coarse index; `validate`
-(default true) checks the partition invariants.
+(default true) checks the partition invariants, value IDs and dictionary
+offsets. Invalid content throws `FormatError`. Address-family flags must agree
+with their span counts, and sections must fit within the supplied bytes;
+these structural checks always run, even with `validate: false`.
 
 The constructor takes bytes, not a path, and does not care what the file is
 called. `.iplk` is only what the wrangler glob matches — `.bin` works as well,
@@ -316,6 +332,12 @@ as does an R2 object, a KV value or a `fetch` response.
 `::ffff:1.2.3.4` is unmapped and answered from the IPv4 table, because that is
 the address the caller means. Cloudflare hands out that form in some
 configurations.
+
+Mapped IPv6 prefixes wholly within `::ffff:0:0/96` are also converted when
+building: `/96`, `/120` and `/128` become IPv4 `/0`, `/24` and `/32`.
+Host bits are masked first. Wider prefixes retain their IPv6 meaning; for
+example, `::ffff:192.0.2.7/24` means `::/24` and adds no IPv4 coverage.
+Mapped address queries still use the IPv4 table, even with a wider IPv6 prefix.
 
 ## Numbers
 
